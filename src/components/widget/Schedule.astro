@@ -1,0 +1,322 @@
+---
+/**
+ * Schedule.astro — 时间进度 & 节日倒计时侧边栏组件
+ *
+ * ## 显示内容
+ * - 本年进度：百分比 + "本年还剩 N 天" + <progress> 进度条
+ * - 本月进度：当月已过天数 / 剩余天数
+ * - 本周进度：本周已过天数 / 剩余天数
+ * - 节日倒计时："距离××节还有 N 天" + 节日日期
+ *
+ * ## 节假日来源
+ * 与 /calendar/ 站点日历页同源：calendarConfig.builtinHolidays
+ * 构建期通过 expandBuiltinHolidays() + lunar-typescript 换算农历节日为公历日期，
+ * 注入 data-holidays 属性，前端只做"取今天之后最近一条"的倒计时逻辑。
+ *
+ * ## 交互
+ * - pages.calendar 开启时，点击卡片跳转到 /calendar/
+ * - 鼠标悬停有抬升效果（同文章列表卡）
+ * - 每天 0 点自动重新计算（setTimeout 链式调度）
+ */
+import WidgetLayout from "@/components/common/WidgetLayout.astro";
+import { calendarConfig } from "@/config";
+import { expandBuiltinHolidays } from "@/utils/calendar-events";
+
+interface Props {
+	class?: string;
+	style?: string;
+}
+
+const { class: className, style } = Astro.props;
+
+// 展开当年 + 下一年节日
+const now = new Date();
+const years = [now.getFullYear(), now.getFullYear() + 1];
+const holidayList = expandBuiltinHolidays(calendarConfig.builtinHolidays, years);
+
+// 是否启用点击跳转到日历页
+// 是否启用点击跳转到日历页
+const linkToCalendar = calendarConfig.pages?.calendar ?? true;
+---
+
+<WidgetLayout
+	id="schedule-widget"
+	name=""
+	showTitle={false}
+	class={className}
+	style={style}
+>
+	<div
+		class="schedule-container"
+		data-holidays={JSON.stringify(holidayList)}
+	>
+		<!-- 进度区域 -->
+		<div class="progress-section space-y-4">
+			<!-- 本年进度 -->
+			<div class="progress-item flex items-center gap-3">
+				<span class="text-[14px] font-semibold text-(--primary) shrink-0 w-[60px] year-progress">--%</span>
+				<div class="flex-1 min-w-0">
+					<span class="text-sm text-neutral-700 dark:text-neutral-300 year-days-left">本年还剩 -- 天</span>
+					<progress max="365" class="schedule-progress-bar pBar_year" value="0"></progress>
+				</div>
+			</div>
+
+			<!-- 本月进度 -->
+			<div class="progress-item flex items-center gap-3">
+				<span class="text-[14px] font-semibold text-(--primary) shrink-0 w-[60px] month-progress">--%</span>
+				<div class="flex-1 min-w-0">
+					<span class="text-sm text-neutral-700 dark:text-neutral-300 month-days-left">本月还剩 -- 天</span>
+					<progress max="31" class="schedule-progress-bar pBar_month" value="0"></progress>
+				</div>
+			</div>
+
+			<!-- 本周进度 -->
+			<div class="progress-item flex items-center gap-3">
+				<span class="text-[14px] font-semibold text-(--primary) shrink-0 w-[60px] week-progress">--%</span>
+				<div class="flex-1 min-w-0">
+					<span class="text-sm text-neutral-700 dark:text-neutral-300 week-days-left">本周还剩 -- 天</span>
+					<progress max="7" class="schedule-progress-bar pBar_week" value="0"></progress>
+				</div>
+			</div>
+		</div>
+
+		<!-- 节假日倒计时区域 -->
+		<div class="holiday-section mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700">
+			<div class="text-center">
+				<p class="text-base font-semibold text-neutral-700 dark:text-neutral-300 mb-0 nearest-holiday-full">
+					距离 --
+				</p>
+				<p class="text-4xl font-bold text-(--primary) mb-2 nearest-holiday-days">
+					--
+				</p>
+				<p class="text-xs text-neutral-500 dark:text-neutral-400 nearest-holiday-date">
+					--
+				</p>
+			</div>
+		</div>
+	</div>
+</WidgetLayout>
+
+<!-- ================================================================
+     进度条 & 卡片样式
+     ================================================================ -->
+<style is:global>
+	/* <progress> 美化：主题色跟随 --primary */
+	.schedule-progress-bar {
+		width: 100%;
+		height: 6px;
+		border-radius: 3px;
+		overflow: hidden;
+		border: none;
+		background: var(--btn-plain-bg-hover, #e5e7eb);
+	}
+
+	/* WebKit 进度值颜色 */
+	.schedule-progress-bar::-webkit-progress-value {
+		background: var(--primary);
+		border-radius: 3px;
+		transition: width 0.4s ease;
+	}
+
+	/* WebKit 背景 */
+	.schedule-progress-bar::-webkit-progress-bar {
+		background: var(--btn-plain-bg-hover, #e5e7eb);
+		border-radius: 3px;
+	}
+
+	/* Firefox */
+	.schedule-progress-bar::-moz-progress-bar {
+		background: var(--primary);
+		border-radius: 3px;
+	}
+
+	/* 点击跳转 + 悬停抬升 */
+	.schedule-container[data-link-calendar="true"] {
+		cursor: pointer;
+		transition: transform 0.2s ease, box-shadow 0.2s ease;
+	}
+	.schedule-container[data-link-calendar="true"]:hover {
+		transform: translateY(-2px);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+	}
+</style>
+
+<!-- ================================================================
+     客户端脚本：进度计算 + 节日倒计时 + 每日自动刷新
+     ================================================================ -->
+<script is:inline>
+	(function () {
+		/**
+		 * 等待 .schedule-container 挂载（兼容 Swup 延迟渲染），
+		 * 最多等 5 秒，每 100ms 轮询一次。
+		 */
+		function waitForContainer(callback) {
+			var attempts = 0;
+			var maxAttempts = 50;
+			function check() {
+				var el = document.querySelector(".schedule-container");
+				if (el) {
+					callback(el);
+				} else if (attempts < maxAttempts) {
+					attempts++;
+					setTimeout(check, 100);
+				}
+			}
+			check();
+		}
+
+		/** 计算并更新所有进度 + 节日 */
+		function updateSchedule() {
+			var container = document.querySelector(".schedule-container");
+			if (!container) return;
+
+			// 获取注入的节日数据
+			var holidaysRaw = container.getAttribute("data-holidays") || "[]";
+			var holidays = [];
+			try { holidays = JSON.parse(holidaysRaw); } catch (e) {}
+
+			var now = new Date();
+			var year = now.getFullYear();
+			var month = now.getMonth();     // 0-11
+			var date = now.getDate();        // 1-31
+			var dayOfWeek = now.getDay();    // 0=Sun, 1=Mon, ...
+
+			// ---- 本年进度 ----
+			var yearStart = new Date(year, 0, 1);
+			var yearEnd = new Date(year + 1, 0, 1);
+			var totalYearDays = Math.round((yearEnd - yearStart) / 86400000);
+			var elapsedYearDays = Math.round((now - yearStart) / 86400000) + 1;
+			var yearRemaining = totalYearDays - elapsedYearDays;
+			var yearPercent = Math.round((elapsedYearDays / totalYearDays) * 100);
+
+			// ---- 本月进度 ----
+			var monthStart = new Date(year, month, 1);
+			var monthEnd = new Date(year, month + 1, 1);
+			var totalMonthDays = Math.round((monthEnd - monthStart) / 86400000);
+			var elapsedMonthDays = date;
+			var monthRemaining = totalMonthDays - elapsedMonthDays;
+			var monthPercent = Math.round((elapsedMonthDays / totalMonthDays) * 100);
+
+			// ---- 本周进度 ----
+			// 以周一为每周第一天
+			var dayIndex = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Mon=0..Sun=6
+			var elapsedWeekDays = dayIndex + 1;
+			var weekRemaining = 7 - elapsedWeekDays;
+			var weekPercent = Math.round((elapsedWeekDays / 7) * 100);
+
+			// ---- 更新 DOM ----
+			var yearProgEl = container.querySelector(".year-progress");
+			var yearLeftEl = container.querySelector(".year-days-left");
+			var yearBar = container.querySelector(".pBar_year");
+			if (yearProgEl) yearProgEl.textContent = yearPercent + "%";
+			if (yearLeftEl) yearLeftEl.textContent = "本年还剩 " + yearRemaining + " 天";
+			if (yearBar) { yearBar.max = totalYearDays; yearBar.value = elapsedYearDays; }
+
+			var monthProgEl = container.querySelector(".month-progress");
+			var monthLeftEl = container.querySelector(".month-days-left");
+			var monthBar = container.querySelector(".pBar_month");
+			if (monthProgEl) monthProgEl.textContent = monthPercent + "%";
+			if (monthLeftEl) monthLeftEl.textContent = "本月还剩 " + monthRemaining + " 天";
+			if (monthBar) { monthBar.max = totalMonthDays; monthBar.value = elapsedMonthDays; }
+
+			var weekProgEl = container.querySelector(".week-progress");
+			var weekLeftEl = container.querySelector(".week-days-left");
+			var weekBar = container.querySelector(".pBar_week");
+			if (weekProgEl) weekProgEl.textContent = weekPercent + "%";
+			if (weekLeftEl) weekLeftEl.textContent = "本周还剩 " + weekRemaining + " 天";
+			if (weekBar) { weekBar.max = 7; weekBar.value = elapsedWeekDays; }
+
+			// ---- 最近节日倒计时 ----
+			var todayStr = year + "-" +
+				String(month + 1).padStart(2, "0") + "-" +
+				String(date).padStart(2, "0");
+
+			var nearestHoliday = null;
+			for (var i = 0; i < holidays.length; i++) {
+				if (holidays[i].date > todayStr) {
+					nearestHoliday = holidays[i];
+					break;
+				}
+			}
+
+			var holidayNameEl  = container.querySelector(".nearest-holiday-full");
+			var holidayDaysEl  = container.querySelector(".nearest-holiday-days");
+			var holidayDateEl  = container.querySelector(".nearest-holiday-date");
+
+			if (nearestHoliday) {
+				var hDate = new Date(nearestHoliday.date + "T00:00:00");
+				var diffDays = Math.ceil((hDate - now) / 86400000);
+				var hDateFormatted = nearestHoliday.date; // YYYY-MM-DD
+
+				if (holidayNameEl) holidayNameEl.textContent = "距离" + nearestHoliday.name + "还有";
+				if (holidayDaysEl) holidayDaysEl.textContent = diffDays + " 天";
+				if (holidayDateEl) holidayDateEl.textContent = hDateFormatted;
+			} else {
+				if (holidayNameEl) holidayNameEl.textContent = "暂无节日";
+				if (holidayDaysEl) holidayDaysEl.textContent = "🎉";
+				if (holidayDateEl) holidayDateEl.textContent = "";
+			}
+		}
+
+		/**
+		 * 调度次日 0 点刷新
+		 * 使用 setTimeout 链式调用，避免 setInterval 累积误差
+		 */
+		var midnightTimer = null;
+		function scheduleMidnightRefresh() {
+			if (midnightTimer) clearTimeout(midnightTimer);
+			var now = new Date();
+			var tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+			var msUntilMidnight = tomorrow - now;
+			midnightTimer = setTimeout(function () {
+				updateSchedule();
+				scheduleMidnightRefresh(); // 递归调度下一天
+			}, msUntilMidnight + 1000); // +1s 确保跨过零点
+		}
+
+		/** 页面隐藏时清理定时器，显示时恢复 */
+		function onVisibilityChange() {
+			if (document.hidden) {
+				if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
+			} else {
+				updateSchedule();
+				scheduleMidnightRefresh();
+			}
+		}
+
+		// ---- 点击跳转日历页 ----
+		var linkToCalendar = JSON.parse('{linkToCalendar}');
+		if (linkToCalendar) {
+			waitForContainer(function (container) {
+				container.setAttribute("data-link-calendar", "true");
+				container.addEventListener("click", function (e) {
+					// 防止点到内部按钮等元素的误触
+					if (e.target.closest("button, a, input, progress")) return;
+					window.location.href = "/calendar/";
+				});
+			});
+		}
+
+		// ---- 启动 ----
+		waitForContainer(function () {
+			updateSchedule();
+			scheduleMidnightRefresh();
+		});
+
+		// ---- Swup 页面切换 ----
+		document.addEventListener("swup:contentReplaced", function () {
+			waitForContainer(function () {
+				updateSchedule();
+				scheduleMidnightRefresh();
+			});
+		});
+
+		// ---- 页面可见性变化（进入后台暂停，回到前台立即刷新）----
+		document.addEventListener("visibilitychange", onVisibilityChange);
+
+		// ---- 页面卸载时清理 ----
+		window.addEventListener("pagehide", function () {
+			if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
+		});
+	})();
+</script>

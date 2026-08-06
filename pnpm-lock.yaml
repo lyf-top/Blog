@@ -137,6 +137,9 @@ importers:
       l2d-widget:
         specifier: ^0.1.0
         version: 0.1.0
+      lunar-typescript:
+        specifier: ^1.8.6
+        version: 1.8.6
       mdast-util-to-string:
         specifier: ^4.0.0
         version: 4.0.0
@@ -4082,6 +4085,9 @@ packages:
 
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
+
+  lunar-typescript@1.8.6:
+    resolution: {integrity: sha512-5Eo4T/cnuXfrgO4k5LCpOGHIUOuz5hCF/IfNv0T29WY2shR36Hiz+ecN9WjnUuxUKhql9gbOkPaQoqLFKtPRNA==}
 
   magic-string@0.25.9:
     resolution: {integrity: sha512-RmF0AsMzgt25qzqqLc1+MbHmhdx0ojF2Fvs4XnOqz2ZOBXzzkEwc/dJQZCYHAn7v1jbVOjAZfK8msRn4BxO4VQ==}
@@ -10262,6 +10268,8 @@ snapshots:
   lru-cache@5.1.1:
     dependencies:
       yallist: 3.1.1
+
+  lunar-typescript@1.8.6: {}
 
   magic-string@0.25.9:
     dependencies:

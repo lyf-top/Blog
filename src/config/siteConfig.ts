@@ -117,6 +117,10 @@ export const siteConfig: SiteConfig = {
 		dynamic: true,
 		// 书签导航页面开关
 		booknav: true,
+		// 时间线页面开关
+		timeline: true,
+		// 项目展示页面开关
+		projects: true,
 	},
 
 	// 分类导航栏开关，在首页和归档页顶部显示分类快捷导航

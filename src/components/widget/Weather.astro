@@ -1,0 +1,660 @@
+---
+/**
+ * Weather.astro — 天气预报侧边栏组件
+ *
+ * ## 数据来源（全部免费，无需 API Key）
+ * - Open-Meteo Forecast API       — 温度、湿度、风速、UV、日出日落、天气码等
+ * - Open-Meteo Air Quality API    — AQI（欧洲标准）、PM2.5、PM10 等
+ * - ipwho.is                      — IP 定位（回退方案）
+ * - BigDataCloud Reverse Geocoding — 坐标 → 中文城市名（browser 模式）
+ *
+ * ## 定位优先级（由 weatherConfig.locationMode 控制）
+ *   browser → navigator.geolocation → BigDataCloud 逆地理 → Open-Meteo
+ *           ↘ 失败 → ipwho.is → Open-Meteo
+ *                    ↘ 失败 → weatherConfig 固定坐标
+ *   ip      → ipwho.is → Open-Meteo
+ *           ↘ 失败 → weatherConfig 固定坐标
+ *   fixed   → weatherConfig 固定坐标 → Open-Meteo
+ *
+ * ## 缓存策略
+ * localStorage 缓存（key: weather_v2_{lat}_{lon}），默认 5 分钟有效期，
+ * 由 weatherConfig.cacheDurationMs 控制。
+ */
+import WidgetLayout from "@/components/common/WidgetLayout.astro";
+import { weatherConfig } from "@/config";
+import I18nKey from "@/i18n/i18nKey";
+import { i18n } from "@/i18n/translation";
+import type { WidgetComponentConfig } from "@/types/config";
+
+interface Props {
+	class?: string;
+	style?: string;
+	widgetConfig?: WidgetComponentConfig;
+}
+
+const { class: className, style, widgetConfig } = Astro.props;
+const showTitle = widgetConfig?.showTitle !== false;
+
+// 预序列化，通过 define:vars 注入到客户端脚本
+const serializedConfig = JSON.stringify(weatherConfig);
+
+// i18n 文案预处理
+const i18nMap: Record<string, string> = {};
+const weatherI18nKeys = [
+	I18nKey.weather,
+	I18nKey.weatherRetry,
+	I18nKey.weatherLoading,
+	I18nKey.weatherLocated,
+	I18nKey.weatherError,
+	I18nKey.weatherLocationDenied,
+] as const;
+for (const key of weatherI18nKeys) {
+	i18nMap[key] = i18n(key);
+}
+
+// WMO 天气码中文描述（已移入客户端 JS）
+// 此处仅序列化注入
+const WMO_CODES: Record<number, { desc: string; icon: string }> = {
+	0:  { desc: "晴朗",       icon: "material-symbols:sunny-outline-rounded" },
+	1:  { desc: "大部晴朗",   icon: "material-symbols:sunny-outline-rounded" },
+	2:  { desc: "多云",       icon: "material-symbols:partly-cloudy-outline-rounded" },
+	3:  { desc: "阴天",       icon: "material-symbols:cloud-outline" },
+	45: { desc: "雾",         icon: "material-symbols:foggy-outline-rounded" },
+	48: { desc: "雾凇",       icon: "material-symbols:ac-unit-outline-rounded" },
+	51: { desc: "小毛毛雨",   icon: "material-symbols:grain-outline-rounded" },
+	53: { desc: "中毛毛雨",   icon: "material-symbols:grain-outline-rounded" },
+	55: { desc: "大毛毛雨",   icon: "material-symbols:grain-outline-rounded" },
+	56: { desc: "冻毛毛雨",   icon: "material-symbols:ac-unit-outline-rounded" },
+	57: { desc: "冻毛毛雨",   icon: "material-symbols:ac-unit-outline-rounded" },
+	61: { desc: "小雨",       icon: "material-symbols:rainy-outline-rounded" },
+	63: { desc: "中雨",       icon: "material-symbols:rainy-outline-rounded" },
+	65: { desc: "大雨",       icon: "material-symbols:rainy-heavy-outline-rounded" },
+	66: { desc: "冻雨（小）", icon: "material-symbols:ac-unit-outline-rounded" },
+	67: { desc: "冻雨（大）", icon: "material-symbols:ac-unit-outline-rounded" },
+	71: { desc: "小雪",       icon: "material-symbols:weather-snowy-outline-rounded" },
+	73: { desc: "中雪",       icon: "material-symbols:weather-snowy-outline-rounded" },
+	75: { desc: "大雪",       icon: "material-symbols:weather-snowy-outline-rounded" },
+	77: { desc: "雪粒",       icon: "material-symbols:grain-outline-rounded" },
+	80: { desc: "小阵雨",     icon: "material-symbols:rainy-outline-rounded" },
+	81: { desc: "中阵雨",     icon: "material-symbols:rainy-outline-rounded" },
+	82: { desc: "大阵雨",     icon: "material-symbols:rainy-heavy-outline-rounded" },
+	85: { desc: "小阵雪",     icon: "material-symbols:weather-snowy-outline-rounded" },
+	86: { desc: "大阵雪",     icon: "material-symbols:weather-snowy-outline-rounded" },
+	95: { desc: "雷暴",       icon: "material-symbols:thunderstorm-outline-rounded" },
+	96: { desc: "雷暴（小雹）", icon: "material-symbols:thunderstorm-outline-rounded" },
+	99: { desc: "雷暴（大雹）", icon: "material-symbols:thunderstorm-outline-rounded" },
+};
+
+const WMO_CODES_EN: Record<number, { desc: string; icon: string }> = {
+	0:  { desc: "Clear",              icon: "material-symbols:sunny-outline-rounded" },
+	1:  { desc: "Mostly Clear",       icon: "material-symbols:sunny-outline-rounded" },
+	2:  { desc: "Partly Cloudy",      icon: "material-symbols:partly-cloudy-outline-rounded" },
+	3:  { desc: "Overcast",           icon: "material-symbols:cloud-outline" },
+	45: { desc: "Fog",                icon: "material-symbols:foggy-outline-rounded" },
+	48: { desc: "Rime Fog",           icon: "material-symbols:ac-unit-outline-rounded" },
+	51: { desc: "Light Drizzle",      icon: "material-symbols:grain-outline-rounded" },
+	53: { desc: "Moderate Drizzle",   icon: "material-symbols:grain-outline-rounded" },
+	55: { desc: "Heavy Drizzle",      icon: "material-symbols:grain-outline-rounded" },
+	56: { desc: "Freezing Drizzle",   icon: "material-symbols:ac-unit-outline-rounded" },
+	57: { desc: "Freezing Drizzle",   icon: "material-symbols:ac-unit-outline-rounded" },
+	61: { desc: "Light Rain",         icon: "material-symbols:rainy-outline-rounded" },
+	63: { desc: "Moderate Rain",      icon: "material-symbols:rainy-outline-rounded" },
+	65: { desc: "Heavy Rain",         icon: "material-symbols:rainy-heavy-outline-rounded" },
+	66: { desc: "Light Freezing Rain",icon: "material-symbols:ac-unit-outline-rounded" },
+	67: { desc: "Heavy Freezing Rain",icon: "material-symbols:ac-unit-outline-rounded" },
+	71: { desc: "Light Snow",         icon: "material-symbols:weather-snowy-outline-rounded" },
+	73: { desc: "Moderate Snow",      icon: "material-symbols:weather-snowy-outline-rounded" },
+	75: { desc: "Heavy Snow",         icon: "material-symbols:weather-snowy-outline-rounded" },
+	77: { desc: "Snow Grains",        icon: "material-symbols:grain-outline-rounded" },
+	80: { desc: "Light Showers",      icon: "material-symbols:rainy-outline-rounded" },
+	81: { desc: "Moderate Showers",   icon: "material-symbols:rainy-outline-rounded" },
+	82: { desc: "Heavy Showers",      icon: "material-symbols:rainy-heavy-outline-rounded" },
+	85: { desc: "Light Snow Showers", icon: "material-symbols:weather-snowy-outline-rounded" },
+	86: { desc: "Heavy Snow Showers", icon: "material-symbols:weather-snowy-outline-rounded" },
+	95: { desc: "Thunderstorm",       icon: "material-symbols:thunderstorm-outline-rounded" },
+	96: { desc: "Thunderstorm w/ Hail", icon: "material-symbols:thunderstorm-outline-rounded" },
+	99: { desc: "Thunderstorm w/ Hail", icon: "material-symbols:thunderstorm-outline-rounded" },
+};
+
+const serializedWmoCodes = JSON.stringify(WMO_CODES);
+const serializedWmoCodesEn = JSON.stringify(WMO_CODES_EN);
+const serializedI18n = JSON.stringify(i18nMap);
+---
+
+<WidgetLayout
+	name={i18n(I18nKey.weather)}
+	showTitle={showTitle}
+	id="weather-widget"
+	class={className}
+	style={style}
+>
+	<!-- 占位骨架屏 — 数据加载前展示 -->
+	<div id="weather-content" class="flex flex-col gap-3 min-h-[120px]">
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-2">
+				<div class="skeleton-line w-16 h-4 rounded"></div>
+				<div class="skeleton-line w-20 h-3 rounded opacity-60"></div>
+			</div>
+			<div class="skeleton-line w-8 h-8 rounded-full"></div>
+		</div>
+		<div class="flex items-baseline gap-1 mt-1">
+			<div class="skeleton-line w-14 h-10 rounded"></div>
+			<div class="skeleton-line w-6 h-4 rounded opacity-60"></div>
+		</div>
+		<div class="grid grid-cols-2 gap-x-3 gap-y-2 mt-2">
+			<div class="skeleton-line w-full h-8 rounded"></div>
+			<div class="skeleton-line w-full h-8 rounded"></div>
+			<div class="skeleton-line w-full h-8 rounded"></div>
+			<div class="skeleton-line w-full h-8 rounded"></div>
+		</div>
+	</div>
+
+	<!-- 错误提示 + 重试按钮（初始隐藏） -->
+	<div id="weather-error" class="hidden flex-col items-center gap-2 py-4">
+		<span id="weather-error-msg" class="text-sm text-neutral-500 dark:text-neutral-400"></span>
+		<button id="weather-retry-btn" class="btn-plain text-(--primary) text-sm underline cursor-pointer">
+			{i18n(I18nKey.weatherRetry)}
+		</button>
+	</div>
+</WidgetLayout>
+
+<style is:global>
+	.skeleton-line {
+		background: linear-gradient(90deg,
+			var(--skeleton-base, #e5e7eb) 25%,
+			var(--skeleton-shine, #f3f4f6) 50%,
+			var(--skeleton-base, #e5e7eb) 75%);
+		background-size: 200% 100%;
+		animation: skeleton-shimmer 1.5s ease-in-out infinite;
+	}
+	:root.dark .skeleton-line {
+		--skeleton-base: #374151;
+		--skeleton-shine: #4b5563;
+	}
+	@keyframes skeleton-shimmer {
+		0%   { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
+</style>
+
+<script is:inline define:vars={{
+	serializedConfig,
+	serializedWmoCodes,
+	serializedWmoCodesEn,
+	serializedI18n,
+}}>
+(function () {
+	// ---- 解析注入变量 -------------------------------------------
+	var WMO_CODES      = JSON.parse(serializedWmoCodes);
+	var WMO_CODES_EN   = JSON.parse(serializedWmoCodesEn);
+	var i18nMap        = JSON.parse(serializedI18n);
+	var config         = JSON.parse(serializedConfig);
+
+	var isZh = (document.documentElement.lang || "").startsWith("zh");
+
+	/** 获取天气描述 */
+	function getWeatherDesc(code) {
+		var entry = WMO_CODES[code];
+		if (entry) return entry.desc;
+		var en = WMO_CODES_EN[code];
+		return en ? en.desc : String(code);
+	}
+
+	/** 快捷 i18n */
+	function t(key) { return i18nMap[key] || key; }
+
+	// ---- DOM 引用 ------------------------------------------------
+	var contentEl  = document.getElementById("weather-content");
+	var errorEl    = document.getElementById("weather-error");
+	var errorMsgEl = document.getElementById("weather-error-msg");
+	var retryBtn   = document.getElementById("weather-retry-btn");
+
+	/** 显示错误消息 */
+	function showError(msg) {
+		if (!errorMsgEl || !errorEl || !contentEl) return;
+		errorMsgEl.textContent = msg;
+		errorEl.classList.remove("hidden");
+		errorEl.classList.add("flex");
+		contentEl.innerHTML = "";
+		contentEl.style.minHeight = "0";
+	}
+
+	/** 显示加载骨架 */
+	function showSkeleton() {
+		if (!errorEl) return;
+		errorEl.classList.add("hidden");
+		errorEl.classList.remove("flex");
+	}
+
+	// ---- 缓存工具 ------------------------------------------------
+	function getCacheKey(lat, lon) {
+		return "weather_v2_" + lat.toFixed(2) + "_" + lon.toFixed(2);
+	}
+
+	function getCached(key) {
+		try {
+			var raw = localStorage.getItem(key);
+			if (!raw) return null;
+			var data = JSON.parse(raw);
+			if (Date.now() - data._ts > config.cacheDurationMs) return null;
+			return data;
+		} catch (e) { return null; }
+	}
+
+	function setCache(key, data) {
+		try {
+			data._ts = Date.now();
+			localStorage.setItem(key, JSON.stringify(data));
+		} catch (e) { /* 静默忽略 */ }
+	}
+
+	// ---- API 请求封装 --------------------------------------------
+	async function fetchJSON(url, timeoutMs) {
+		if (timeoutMs === undefined) timeoutMs = 8000;
+		var ctrl = new AbortController();
+		var timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+		try {
+			var res = await fetch(url, { signal: ctrl.signal });
+			if (!res.ok) throw new Error("HTTP " + res.status);
+			return await res.json();
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	// ---- Step 1: 浏览器定位 ---------------------------------------
+	function getBrowserLocation() {
+		return new Promise(function (resolve, reject) {
+			if (!navigator.geolocation) {
+				return reject(new Error("Geolocation not supported"));
+			}
+			navigator.geolocation.getCurrentPosition(
+				function (pos) { resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }); },
+				function (err) { reject(new Error("Geolocation error: " + err.message)); },
+				{
+					enableHighAccuracy: false,
+					timeout: config.geolocationTimeoutMs,
+					maximumAge: 5 * 60 * 1000,
+				}
+			);
+		});
+	}
+
+	// ---- Step 2: IP 定位（回退） -----------------------------------
+	async function getIPLocation() {
+		var data = await fetchJSON("https://api.ipwho.is/");
+		if (!data || !data.latitude || !data.longitude) {
+			throw new Error("ipwho.is returned no coordinates");
+		}
+		return { lat: data.latitude, lon: data.longitude, city: data.city || "" };
+	}
+
+	// ---- Step 3: 逆地理编码（browser 模式下获取中文城市名） ----------
+	async function reverseGeocode(lat, lon) {
+		try {
+			var data = await fetchJSON(
+				"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=" + lat +
+				"&longitude=" + lon + "&localityLanguage=zh",
+				5000
+			);
+			return (data && (data.city || data.locality || data.principalSubdivision)) || "";
+		} catch (e) { return ""; }
+	}
+
+	// ---- Step 4: Open-Meteo 天气 ----------------------------------
+	async function fetchWeather(lat, lon) {
+		var tz = config.timezone || "Asia/Shanghai";
+
+		var results = await Promise.all([
+			fetchJSON(
+				"https://api.open-meteo.com/v1/forecast?" +
+				"latitude=" + lat + "&longitude=" + lon +
+				"&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code," +
+				"wind_speed_10m,wind_direction_10m,uv_index,surface_pressure,precipitation" +
+				"&hourly=temperature_2m,weather_code" +
+				"&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset" +
+				"&timezone=" + encodeURIComponent(tz) +
+				"&forecast_days=7",
+				10000
+			),
+			fetchJSON(
+				"https://air-quality-api.open-meteo.com/v1/air-quality?" +
+				"latitude=" + lat + "&longitude=" + lon +
+				"&current=european_aqi,pm2_5,pm10" +
+				"&timezone=" + encodeURIComponent(tz),
+				10000
+			),
+		]);
+
+		var forecastData = results[0];
+		var aqData = results[1];
+
+		if (!forecastData || !forecastData.current) {
+			throw new Error("Open-Meteo returned no current weather");
+		}
+
+		var cur = forecastData.current;
+		var aqCur = aqData && aqData.current;
+
+		var result = {
+			lat: lat,
+			lon: lon,
+			city: "",
+			current: {
+				time: cur.time,
+				temperature: Math.round(cur.temperature_2m),
+				humidity: cur.relative_humidity_2m,
+				apparentTemperature: Math.round(cur.apparent_temperature),
+				weatherCode: cur.weather_code,
+				windSpeed: cur.wind_speed_10m,
+				windDirection: cur.wind_direction_10m,
+				uvIndex: cur.uv_index,
+				surfacePressure: cur.surface_pressure,
+				precipitation: cur.precipitation != null ? cur.precipitation : 0,
+			},
+		};
+
+		if (forecastData.hourly) {
+			result.hourly = {
+				time: forecastData.hourly.time.slice(0, 24),
+				temperature: forecastData.hourly.temperature_2m.slice(0, 24),
+				weatherCode: forecastData.hourly.weather_code.slice(0, 24),
+			};
+		}
+
+		if (forecastData.daily) {
+			result.daily = {
+				time: forecastData.daily.time,
+				weatherCode: forecastData.daily.weather_code,
+				temperatureMax: forecastData.daily.temperature_2m_max,
+				temperatureMin: forecastData.daily.temperature_2m_min,
+				sunrise: forecastData.daily.sunrise,
+				sunset: forecastData.daily.sunset,
+			};
+		}
+
+		if (aqCur) {
+			result.airQuality = {
+				europeanAqi: aqCur.european_aqi,
+				pm25: aqCur.pm2_5,
+				pm10: aqCur.pm10,
+			};
+		}
+
+		return result;
+	}
+
+	// ---- 辅助函数 -----------------------------------------------
+	function windDegToDir(deg) {
+		var dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+		return dirs[Math.round(deg / 45) % 8];
+	}
+
+	function getUvLevel(uv) {
+		if (uv <= 2) return isZh ? "低" : "Low";
+		if (uv <= 5) return isZh ? "中" : "Moderate";
+		if (uv <= 7) return isZh ? "高" : "High";
+		if (uv <= 10) return isZh ? "很高" : "Very High";
+		return isZh ? "极高" : "Extreme";
+	}
+
+	function getAqiLabel(aqi) {
+		var labels = isZh
+			? ["", "优", "良", "一般", "差", "很差"]
+			: ["", "Good", "Fair", "Moderate", "Poor", "Very Poor"];
+		return labels[Math.min(Math.max(aqi, 1), 5)] || labels[1];
+	}
+
+	function formatTime(iso) {
+		try {
+			var d = new Date(iso);
+			return d.toLocaleTimeString(isZh ? "zh-CN" : "en-US", {
+				hour: "2-digit", minute: "2-digit", hour12: false,
+			});
+		} catch (e) { return iso; }
+	}
+
+	function formatWeekday(iso) {
+		try {
+			var d = new Date(iso);
+			return d.toLocaleDateString(isZh ? "zh-CN" : "en-US", { weekday: "short" });
+		} catch (e) { return iso; }
+	}
+
+	/** WMO 天气码 → emoji */
+	function weatherEmoji(code) {
+		var map = {
+			0: "☀️", 1: "🌤", 2: "⛅", 3: "☁️",
+			45: "🌫", 48: "🌫",
+			51: "🌦", 53: "🌦", 55: "🌧", 56: "🌧❄", 57: "🌧❄",
+			61: "🌦", 63: "🌧", 65: "🌧", 66: "🌧❄", 67: "🌧❄",
+			71: "🌨", 73: "🌨", 75: "❄️", 77: "🌨",
+			80: "🌦", 81: "🌧", 82: "🌧",
+			85: "🌨", 86: "🌨",
+			95: "⛈", 96: "⛈", 99: "⛈",
+		};
+		return map[code] || "☁️";
+	}
+
+	function escapeHtml(s) {
+		return String(s).replace(/[&<>"']/g, function (c) {
+			if (c === "&") return "&amp;";
+			if (c === "<") return "&lt;";
+			if (c === ">") return "&gt;";
+			if (c === '"') return "&quot;";
+			if (c === "'") return "&#039;";
+			return c;
+		});
+	}
+
+	function detailItem(emoji, label, value) {
+		return '<div class="flex items-center gap-1.5 p-1.5 rounded-lg bg-neutral-50 dark:bg-neutral-800/50">' +
+			'<span class="text-sm leading-none flex-shrink-0">' + emoji + '</span>' +
+			'<span class="text-neutral-500 dark:text-neutral-400">' + escapeHtml(label) + '</span>' +
+			'<span class="ml-auto font-medium text-neutral-800 dark:text-neutral-200 text-right">' + escapeHtml(value) + '</span>' +
+			'</div>';
+	}
+
+	// ==============================================================
+	//  渲染
+	// ==============================================================
+	function renderWeather(w) {
+		var cur = w.current;
+		if (!cur) { showError(t("weatherError")); return; }
+
+		var desc = getWeatherDesc(cur.weatherCode);
+		var windDir = windDegToDir(cur.windDirection);
+		var uvLevel = getUvLevel(cur.uvIndex);
+		var aqi = w.airQuality;
+		var daily = w.daily;
+
+		var sunriseStr = "";
+		var sunsetStr = "";
+		if (daily && daily.time.length > 0) {
+			sunriseStr = formatTime(daily.sunrise[0]);
+			sunsetStr = formatTime(daily.sunset[0]);
+		}
+
+		var html = "";
+
+		// 城市名 + 天气描述
+		html += '<div class="flex items-center justify-between">';
+		html += '<div class="flex items-center gap-1.5">';
+		html += '<span class="text-sm font-medium text-neutral-800 dark:text-neutral-200">' +
+			escapeHtml(w.city || config.city || "—") + '</span>';
+		if (w.city && config.locationMode !== "fixed") {
+			html += '<span class="text-[11px] text-neutral-400 dark:text-neutral-500" title="' +
+				escapeHtml(t("weatherLocated")) + '">📍</span>';
+		}
+		html += '</div>';
+		html += '<div class="flex items-center gap-1 text-neutral-500 dark:text-neutral-400 text-xs">';
+		html += '<span class="text-lg leading-none">' + weatherEmoji(cur.weatherCode) + '</span>';
+		html += '<span>' + escapeHtml(desc) + '</span>';
+		html += '</div></div>';
+
+		// 温度
+		html += '<div class="flex items-baseline gap-0.5 mt-0.5">';
+		html += '<span class="text-4xl font-bold text-neutral-900 dark:text-neutral-100">' +
+			cur.temperature + '</span>';
+		html += '<span class="text-base text-neutral-500 dark:text-neutral-400">°C</span>';
+		html += '</div>';
+		html += '<div class="text-xs text-neutral-500 dark:text-neutral-400 -mt-1">' +
+			(isZh ? "体感" : "Feels like") + " " + cur.apparentTemperature + "°C</div>";
+
+		// 详情网格
+		html += '<div class="grid grid-cols-2 gap-x-3 gap-y-1.5 mt-2.5 text-xs">';
+		html += detailItem("💧", (isZh ? "湿度" : "Humidity"), cur.humidity + "%");
+		html += detailItem("💨", (isZh ? "风速" : "Wind"), cur.windSpeed + " km/h " + windDir);
+		html += detailItem("🌀", (isZh ? "气压" : "Pressure"), cur.surfacePressure + " hPa");
+		html += detailItem("🌧", (isZh ? "降水" : "Precip."), cur.precipitation + " mm");
+		html += detailItem("☀", (isZh ? "紫外线" : "UV Index"), cur.uvIndex + " (" + uvLevel + ")");
+		html += detailItem("👁", (isZh ? "能见度" : "Visibility"), "--");
+
+		if (aqi && aqi.europeanAqi != null) {
+			var aqiLabel = getAqiLabel(aqi.europeanAqi);
+			var pm25Val = aqi.pm25 != null ? aqi.pm25 : "--";
+			html += detailItem("🍃", (isZh ? "空气质量" : "Air Quality"),
+				aqiLabel + " (PM2.5: " + pm25Val + " µg/m³)");
+		} else {
+			html += detailItem("🍃", (isZh ? "空气质量" : "Air Quality"), "--");
+		}
+
+		// 日出日落
+		if (sunriseStr && sunsetStr) {
+			html += '<div class="col-span-2 flex items-center justify-center gap-3 text-neutral-500 dark:text-neutral-400 mt-1 pt-1.5 border-t border-neutral-200 dark:border-neutral-700">';
+			html += '<span>🌅 ' + sunriseStr + '</span>';
+			html += '<span>🌇 ' + sunsetStr + '</span>';
+			html += '</div>';
+		} else {
+			html += '<div class="col-span-2 mt-1 pt-1.5 border-t border-neutral-200 dark:border-neutral-700 flex items-center justify-center text-neutral-400 dark:text-neutral-500 text-[11px]">Open-Meteo</div>';
+		}
+
+		html += '</div>';
+
+		// 7 天预报
+		if (daily && daily.time.length > 1) {
+			html += '<div class="grid grid-cols-7 gap-1 mt-3 pt-2 border-t border-neutral-200 dark:border-neutral-700">';
+			for (var i = 0; i < Math.min(daily.time.length, 7); i++) {
+				var dayCode = daily.weatherCode[i];
+				var high = Math.round(daily.temperatureMax[i]);
+				var low  = Math.round(daily.temperatureMin[i]);
+				var weekday = i === 0 ? (isZh ? "今天" : "Today") : formatWeekday(daily.time[i]);
+				html += '<div class="flex flex-col items-center gap-0.5">';
+				html += '<span class="text-[10px] text-neutral-500 dark:text-neutral-400">' + weekday + '</span>';
+				html += '<span class="text-base leading-none">' + weatherEmoji(dayCode) + '</span>';
+				html += '<span class="text-[11px] font-medium text-neutral-800 dark:text-neutral-200">' + high + '°</span>';
+				html += '<span class="text-[10px] text-neutral-400 dark:text-neutral-500">' + low + '°</span>';
+				html += '</div>';
+			}
+			html += '</div>';
+		}
+
+		if (!contentEl) return;
+		contentEl.innerHTML = html;
+		contentEl.style.minHeight = "";
+
+		if (errorEl) {
+			errorEl.classList.add("hidden");
+			errorEl.classList.remove("flex");
+		}
+	}
+
+	// ==============================================================
+	//  主流程
+	// ==============================================================
+	async function load() {
+		showSkeleton();
+
+		var lat = null;
+		var lon = null;
+		var cityName = "";
+
+		try {
+			if (config.locationMode === "fixed") {
+				lat = config.latitude;
+				lon = config.longitude;
+				cityName = [config.district, config.city].filter(Boolean).join("") || config.city;
+			} else if (config.locationMode === "browser") {
+				// GPS → IP → fixed
+				try {
+					var geo = await getBrowserLocation();
+					lat = geo.lat;
+					lon = geo.lon;
+					cityName = await reverseGeocode(lat, lon);
+				} catch (geoErr) {
+					console.warn("[Weather] Browser geolocation failed, trying IP fallback:", geoErr);
+					try {
+						var ipLoc = await getIPLocation();
+						lat = ipLoc.lat;
+						lon = ipLoc.lon;
+						cityName = ipLoc.city || "";
+					} catch (ipErr) {
+						console.warn("[Weather] IP geolocation failed, using fixed fallback:", ipErr);
+						lat = config.latitude;
+						lon = config.longitude;
+						cityName = [config.district, config.city].filter(Boolean).join("") || config.city;
+					}
+				}
+			} else if (config.locationMode === "ip") {
+				// IP → fixed
+				try {
+					var ipLoc = await getIPLocation();
+					lat = ipLoc.lat;
+					lon = ipLoc.lon;
+					cityName = ipLoc.city || "";
+				} catch (ipErr) {
+					console.warn("[Weather] IP geolocation failed, using fixed fallback:", ipErr);
+					lat = config.latitude;
+					lon = config.longitude;
+					cityName = [config.district, config.city].filter(Boolean).join("") || config.city;
+				}
+			}
+		} catch (err) {
+			console.error("[Weather] Location error:", err);
+			showError(t("weatherLocationDenied"));
+			return;
+		}
+
+		if (lat == null || lon == null) {
+			showError(t("weatherError"));
+			return;
+		}
+
+		// 检查缓存
+		var cacheKey = getCacheKey(lat, lon);
+		var cached = getCached(cacheKey);
+		if (cached) {
+			cached.city = cityName || cached.city || "";
+			renderWeather(cached);
+			return;
+		}
+
+		// 拉取天气
+		try {
+			var weather = await fetchWeather(lat, lon);
+			weather.city = cityName || "";
+			setCache(cacheKey, weather);
+			renderWeather(weather);
+		} catch (err) {
+			console.error("[Weather] Fetch failed:", err);
+			showError(t("weatherError"));
+		}
+	}
+
+	// 重试按钮
+	if (retryBtn) {
+		retryBtn.addEventListener("click", function (e) {
+			e.preventDefault();
+			load();
+		});
+	}
+
+	// 启动
+	load();
+
+	// Swup 页面切换后重新加载
+	document.addEventListener("swup:contentReplaced", function () {
+		setTimeout(load, 200);
+	});
+})();
+</script>

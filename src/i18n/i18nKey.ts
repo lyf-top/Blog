@@ -420,6 +420,49 @@ enum I18nKey {
 	videoPrev = "videoPrev",
 	videoNext = "videoNext",
 	videoLoadError = "videoLoadError",
+
+	// 天气预报
+	weather = "weather",
+	weatherRetry = "weatherRetry",
+	weatherLoading = "weatherLoading",
+	weatherLocated = "weatherLocated",
+	weatherError = "weatherError",
+	weatherLocationDenied = "weatherLocationDenied",
+
+	// 时间线
+	timeline = "timeline",
+	timelineSubtitle = "timelineSubtitle",
+	timelineEducation = "timelineEducation",
+	timelineWork = "timelineWork",
+	timelineProject = "timelineProject",
+	timelineAchievement = "timelineAchievement",
+	timelinePresent = "timelinePresent",
+	timelineMonths = "timelineMonths",
+	timelineYears = "timelineYears",
+	timelineCurrent = "timelineCurrent",
+	timelineAchievements = "timelineAchievements",
+	timelineNoResults = "timelineNoResults",
+
+	// 项目展示
+	projects = "projects",
+	projectsSubtitle = "projectsSubtitle",
+	projectsAll = "projectsAll",
+	projectsWeb = "projectsWeb",
+	projectsMobile = "projectsMobile",
+	projectsDesktop = "projectsDesktop",
+	projectsCourse = "projectsCourse",
+	projectsOther = "projectsOther",
+	projectsTotal = "projectsTotal",
+	projectsCompleted = "projectsCompleted",
+	projectsInProgress = "projectsInProgress",
+	projectsTechStack = "projectsTechStack",
+	projectsFeatured = "projectsFeatured",
+	projectsPlanned = "projectsPlanned",
+	projectsDemo = "projectsDemo",
+	projectsSource = "projectsSource",
+	projectsVisit = "projectsVisit",
+	projectsGitHub = "projectsGitHub",
+	projectsNoResults = "projectsNoResults",
 }
 
 export default I18nKey;

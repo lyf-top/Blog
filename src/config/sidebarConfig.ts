@@ -19,7 +19,7 @@ export const sidebarLayoutConfig: SidebarLayoutConfig = {
 	tabletSidebar: "left",
 
 	// 文章详情页隐藏侧边栏，设为 true 则只在首页等非文章页显示
-	hideSidebarOnPostPage: "true",
+	hideSidebarOnPostPage: true,
 
 	// 文章详情页保持双侧栏
 	// 使用单侧栏(position为left或right)时，是否在文章详情页显示双侧边栏，（hideSidebarOnPostPage需要保持false）
@@ -98,6 +98,13 @@ export const sidebarLayoutConfig: SidebarLayoutConfig = {
 				collapseThreshold: 10,
 			},
 		},
+		{
+			// 组件类型：时间进度与节日倒计时组件
+			type: "schedule",
+			enable: true,
+			position: "sticky",
+			showOnPostPage: false,
+		},
 	],
 
 	// 右侧边栏组件配置列表
@@ -120,6 +127,23 @@ export const sidebarLayoutConfig: SidebarLayoutConfig = {
 			},
 		},
 		{
+			// 组件类型：天气预报组件
+			type: "weather",
+			// 是否启用该组件
+			enable: true,
+			// 组件位置
+			position: "top",
+			// 是否在文章详情页显示
+			showOnPostPage: false,
+		},
+		{
+			// 组件类型：时间和问候语组件
+			type: "timeGreeting",
+			enable: true,
+			position: "top",
+			showOnPostPage: true,
+		},
+		{
 			// 组件类型：站点统计组件
 			type: "stats",
 			// 是否启用该组件
@@ -133,16 +157,16 @@ export const sidebarLayoutConfig: SidebarLayoutConfig = {
 			// 组件类型：站点信息组件
 			type: "siteInfo",
 			// 是否启用该组件
-			enable: true,
+			enable: false,
 			// 组件位置
 			position: "top",
 			// 是否在文章详情页显示
-			showOnPostPage: true,
+			showOnPostPage: false,
 			// 组件专属配置
 			specificConfig: {
 				siteInfo: {
 					// 未能识别的构建平台回退显示文本，可自定义
-					unknownBuildPlatform: "Unknown CI",
+					unknownBuildPlatform: "EdgeOne",
 				},
 			},
 		},

@@ -65,6 +65,12 @@ const getDynamicNavBarConfig = (): NavBarConfig => {
 			// 番组计划
 			LinkPresets.Bangumi,
 
+			// 时间线
+			LinkPresets.Timeline,
+
+			// 项目展示
+			LinkPresets.Projects,
+
 			// 书签导航
 			LinkPresets.Booknav,
 		],
@@ -171,6 +177,18 @@ export const LinkPresets: Record<string, NavBarLink> = {
 		url: "/anime/",
 		icon: "material-symbols:live-tv",
 		pageKey: "anime",
+	},
+	Projects: {
+		name: "项目展示",
+		url: "/projects/",
+		icon: "material-symbols:folder-special",
+		pageKey: "projects",
+	},
+	Timeline: {
+		name: "时间线",
+		url: "/timeline/",
+		icon: "material-symbols:timeline",
+		pageKey: "timeline",
 	},
 	Booknav: {
 		name: "书签导航",

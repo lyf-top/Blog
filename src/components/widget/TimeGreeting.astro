@@ -1,0 +1,175 @@
+---
+/**
+ * TimeGreeting.astro — 时间问候侧边栏组件
+ *
+ * 纯前端时钟组件，每分钟刷新一次，兼容 Swup 页面切换。
+ *
+ * 显示内容：
+ * - 顶部问候语（按小时自动切换：深夜 / 清晨 / 上午 / 中午 / 下午 / 晚上）
+ * - 大号 HH:mm 数字时钟
+ * - 日期 + 星期
+ * - 右侧图标（深夜 🌙 / 清晨 🌅 / 白天 ☀️ / 傍晚 🌆 自动切换）
+ * - 底部随机风景图（默认 https://t.alcy.cc/fj，可通过 window.timeGreetingImage 覆盖）
+ *
+ * 自定义底图 API：在页面或脚本中覆盖 window.timeGreetingImage：
+ *   window.timeGreetingImage = "https://t.alcy.cc/mp";  // 手机竖版
+ *   window.timeGreetingImage = "https://bing.img.run/rand_m.php";  // 必应竖版
+ */
+import { Icon } from "astro-icon/components";
+
+interface Props {
+	class?: string;
+	style?: string;
+}
+
+const { class: className, style } = Astro.props;
+---
+
+<div
+	id="time-greeting"
+	class:list={["card-base flex flex-col relative overflow-hidden", className]}
+	style={style}
+>
+	<!-- 上半区：问候语 + 时间 + 图标 -->
+	<div class="px-5 pt-5 pb-3 flex justify-between items-start">
+		<div class="flex flex-col gap-1">
+			<!-- 问候语 -->
+			<span class="text-base font-bold text-neutral-700 dark:text-neutral-300 greeting-text">
+				正在获取时间...
+			</span>
+			<!-- 时间 + 日期 -->
+			<div class="flex items-end gap-3 text-neutral-800 dark:text-neutral-200">
+				<div class="flex items-baseline">
+					<span class="text-4xl font-bold font-mono time-display">--:--</span>
+				</div>
+				<div class="flex flex-col mb-[0.15rem]">
+					<span class="text-xs font-bold opacity-60 uppercase tracking-wider date-week">---</span>
+					<div class="flex items-baseline text-sm font-bold opacity-80">
+						<span class="date-day">--</span>
+						<span class="opacity-80 ml-0.5 date-month">/--</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- 时段图标：深夜 / 清晨 / 白天 / 傍晚 -->
+		<div class="text-2xl text-(--primary) greeting-icons mt-1 opacity-80">
+			<Icon name="material-symbols:mode-night-outline-rounded" class="hidden icon-night" />
+			<Icon name="material-symbols:wb-twilight-rounded" class="hidden icon-morning" />
+			<Icon name="material-symbols:wb-sunny-outline-rounded" class="hidden icon-noon" />
+			<Icon name="material-symbols:nightlight-outline-rounded" class="hidden icon-evening" />
+		</div>
+	</div>
+
+	<!-- 下半区：随机风景图 -->
+	<div class="w-full h-36 relative overflow-hidden time-image-container">
+		<div class="absolute inset-0 bg-cover bg-center transition-opacity duration-1000 opacity-0 time-image"></div>
+		<!-- 底部渐变遮罩，让卡片背景自然过渡 -->
+		<div class="absolute inset-0 bg-gradient-to-t from-(--card-bg) via-transparent to-transparent opacity-60"></div>
+	</div>
+</div>
+
+<script is:inline>
+	(function () {
+		const weekDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+		// 默认底图 API（带时间戳防缓存），可在外部覆盖
+		if (!window.timeGreetingImage) {
+			window.timeGreetingImage = "https://t.alcy.cc/fj?t=" + Date.now();
+		}
+
+		/**
+		 * 根据当前小时返回中文问候语 + 时段标识
+		 *   0-5   深夜 (night)
+		 *   6-8   清晨 (morning)
+		 *   9-11  上午 (noon)
+		 *   12-13 中午 (noon)
+		 *   14-17 下午 (noon)
+		 *   18-23 晚上 (evening)
+		 */
+		function getGreeting(hours) {
+			if (hours >= 0 && hours < 6) {
+				return { text: "夜深了，早点休息！", period: "night" };
+			} else if (hours >= 6 && hours < 9) {
+				return { text: "早上好，新的一天！", period: "morning" };
+			} else if (hours >= 9 && hours < 12) {
+				return { text: "上午好，充满活力！", period: "noon" };
+			} else if (hours >= 12 && hours < 14) {
+				return { text: "中午好，记得午休！", period: "noon" };
+			} else if (hours >= 14 && hours < 18) {
+				return { text: "下午好，继续加油！", period: "noon" };
+			} else {
+				return { text: "晚上好，放松一下！", period: "evening" };
+			}
+		}
+
+		function updateTimeGreeting() {
+			// 批量查询所有实例（支持 Swup 切换后存在多份 DOM）
+			var dayDisplays   = document.querySelectorAll(".date-day");
+			var monthDisplays = document.querySelectorAll(".date-month");
+			var weekDisplays  = document.querySelectorAll(".date-week");
+			var timeDisplays  = document.querySelectorAll(".time-display");
+			var greetingTexts = document.querySelectorAll(".greeting-text");
+			var greetingIcons = document.querySelectorAll(".greeting-icons");
+			var imageEls      = document.querySelectorAll(".time-image");
+
+			if (dayDisplays.length === 0) return;
+
+			var now     = new Date();
+			var hours   = now.getHours();
+			var minutes = String(now.getMinutes()).padStart(2, "0");
+
+			var month   = String(now.getMonth() + 1).padStart(2, "0");
+			var day     = String(now.getDate()).padStart(2, "0");
+			var weekDay = weekDays[now.getDay()];
+			var timeStr = String(hours).padStart(2, "0") + ":" + minutes;
+
+			var greet   = getGreeting(hours);
+
+			// 更新文字
+			dayDisplays.forEach(function (el) { el.textContent = day; });
+			monthDisplays.forEach(function (el) { el.textContent = "/" + month; });
+			weekDisplays.forEach(function (el) { el.textContent = weekDay; });
+			timeDisplays.forEach(function (el) { el.textContent = timeStr; });
+			greetingTexts.forEach(function (el) { el.textContent = greet.text; });
+
+			// 切换图标
+			greetingIcons.forEach(function (container) {
+				var icons = container.querySelectorAll("svg");
+				icons.forEach(function (icon) {
+					if (icon.classList.contains("icon-" + greet.period)) {
+						icon.classList.remove("hidden");
+					} else {
+						icon.classList.add("hidden");
+					}
+				});
+			});
+
+			// 设置底图（仅首次）
+			imageEls.forEach(function (el) {
+				if (el.getAttribute("data-image-set") !== "true") {
+					el.style.backgroundImage = "url('" + window.timeGreetingImage + "')";
+					el.setAttribute("data-image-set", "true");
+					setTimeout(function () {
+						el.classList.remove("opacity-0");
+						el.classList.add("opacity-100");
+					}, 50);
+				}
+			});
+		}
+
+		// 每分钟刷新
+		if (window.timeGreetingInterval) {
+			clearInterval(window.timeGreetingInterval);
+		}
+		window.timeGreetingInterval = setInterval(updateTimeGreeting, 60000);
+
+		// 首次执行
+		updateTimeGreeting();
+
+		// Swup 页面切换后重新执行
+		document.addEventListener("swup:contentReplaced", function () {
+			updateTimeGreeting();
+		});
+	})();
+</script>

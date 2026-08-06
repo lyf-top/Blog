@@ -1,0 +1,152 @@
+---
+/**
+ * WelcomeToast.astro — 首页欢迎弹窗组件
+ *
+ * 访客首次进入首页时，从右下角（桌面端）/ 底部居中（移动端）滑入一个欢迎卡片，
+ * 显示来自 IP 接口的地理位置问候语，约 5 秒后自动滑出并移除 DOM。
+ *
+ * 与侧边栏组件不同，WelcomeToast 挂在 MainGridLayout 里，不经过 sidebarConfig。
+ */
+---
+
+<script>
+	(function () {
+		// 使用 sessionStorage 标记，同一会话只弹一次（跨 Swup 导航不重复弹）
+		var VISIT_KEY = "blog_welcome_shown";
+		var hasShownToast = false;
+
+		function createWelcomeToast() {
+			var toast = document.createElement("div");
+			toast.id = "welcome-toast";
+			// Tailwind 样式：桌面右下角，初始隐藏（滑出状态）
+			toast.className =
+				"fixed bottom-4 right-4 z-50 transform translate-y-full opacity-0 transition-all duration-500 ease-out";
+
+			toast.innerHTML =
+				'<div class="bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg shadow-lg p-4 max-w-xs">' +
+				'<div class="flex items-start gap-3">' +
+				'<div class="flex-shrink-0 text-2xl">👋</div>' +
+				'<div class="flex-1 min-w-0">' +
+				'<p id="welcome-message" class="text-sm font-semibold text-gray-900 dark:text-gray-100">正在加载...</p>' +
+				'<p class="text-xs text-gray-600 dark:text-gray-400 mt-2 italic">欢迎来到我的博客</p>' +
+				"</div>" +
+				'<button id="welcome-close-btn" class="flex-shrink-0 text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors" aria-label="关闭">' +
+				'<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>' +
+				"</button>" +
+				"</div>" +
+				"</div>";
+
+			document.body.appendChild(toast);
+			return toast;
+		}
+
+	/** 关闭弹窗：滑出 → 移除 DOM */
+		function closeWelcomeToast() {
+			var toast = document.getElementById("welcome-toast");
+			if (!toast) return;
+			toast.classList.add("translate-y-full", "opacity-0");
+			toast.classList.remove("translate-y-0", "opacity-100");
+			setTimeout(function () {
+				if (toast && toast.parentNode) toast.remove();
+			}, 500);
+		}
+
+		/** 请求 IP 接口获取地理位置 */
+		async function fetchLocation() {
+			try {
+				var response = await fetch("https://v2.xxapi.cn/api/ip");
+				var data = await response.json();
+				if (data.code === 200 && data.data) {
+					var locationText = "你好，来自" + data.data.address + "的朋友";
+					var messageEl = document.getElementById("welcome-message");
+					if (messageEl) messageEl.textContent = locationText;
+				}
+			} catch (error) {
+				var messageEl = document.getElementById("welcome-message");
+				if (messageEl) messageEl.textContent = "你好，欢迎来到我的博客";
+			}
+		}
+
+		async function showWelcomeToast() {
+			if (hasShownToast) return;
+
+			// 如果 sessionStorage 已有标记，不再弹
+			try {
+				if (sessionStorage.getItem(VISIT_KEY) === "1") return;
+			} catch (e) {}
+
+			var toast = createWelcomeToast();
+
+			// 绑定关闭按钮
+			var closeBtn = toast.querySelector("#welcome-close-btn");
+			if (closeBtn) {
+				closeBtn.addEventListener("click", closeWelcomeToast);
+			}
+
+			// 延迟一帧触发滑入动画
+			setTimeout(function () {
+				toast.classList.remove("translate-y-full", "opacity-0");
+				toast.classList.add("translate-y-0", "opacity-100");
+			}, 100);
+
+			hasShownToast = true;
+			try { sessionStorage.setItem(VISIT_KEY, "1"); } catch (e) {}
+
+			// 并行请求地理位置
+			await fetchLocation();
+
+			// 5 秒后自动关闭
+			setTimeout(function () { closeWelcomeToast(); }, 5000);
+		}
+
+		function initWelcome() {
+			// 仅首页弹出
+			var pathname = window.location.pathname;
+			var isHomePage = pathname === "/" || pathname === "/index.html" || pathname.endsWith("/index.html");
+
+			if (isHomePage) {
+				showWelcomeToast();
+			}
+		}
+
+		// 初始化：兼容 DOMContentLoaded 与 Astro 视图过渡
+		if (document.readyState === "loading") {
+			document.addEventListener("DOMContentLoaded", initWelcome);
+		} else {
+			initWelcome();
+		}
+
+		// Swup 从文章页回到首页时再次尝试（hasShownToast/sessionStorage 会拦截重复弹窗）
+		document.addEventListener("swup:contentReplaced", initWelcome);
+
+		// 暴露到全局方便调试
+		(window as any).closeWelcomeToast = closeWelcomeToast;
+	})();
+</script>
+
+<style>
+	/* 桌面端：右下角固定，限制最大宽度 */
+	#welcome-toast {
+		max-width: calc(100vw - 2rem);
+	}
+
+	/* 移动端：底部居中，宽度约 90% */
+	@media (max-width: 640px) {
+		#welcome-toast {
+			top: auto;
+			bottom: 1rem;
+			left: 50%;
+			right: auto;
+			transform: translateX(-50%) translateY(100%);
+			width: 90%;
+			max-width: none;
+			transition: transform 0.5s ease-out, opacity 0.5s ease-out;
+		}
+		#welcome-toast.translate-y-0 {
+			transform: translateX(-50%) translateY(0);
+		}
+		#welcome-toast.translate-y-full {
+			transform: translateX(-50%) translateY(100%);
+		}
+	}
+</style>

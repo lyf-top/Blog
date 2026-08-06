@@ -80,6 +80,8 @@ export type SiteConfig = {
 	// 页面开关配置
 	pages: {
 		booknav: boolean; // 书签导航页面开关
+			timeline: boolean; // 时间线页面开关
+			projects: boolean; // 项目展示页面开关
 		friends: boolean; // 友链页面开关
 		sponsor: boolean; // 打赏页面开关
 		guestbook: boolean; // 留言板页面开关

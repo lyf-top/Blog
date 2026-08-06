@@ -97,7 +97,7 @@ export default defineConfig({
 						provider = fontProviders.fontshare();
 						break;
 					case "npm":
-						provider = fontProviders.npm();
+						provider = fontProviders.npm(f.options ?? {});
 						break;
 					default:
 						provider = f.provider;

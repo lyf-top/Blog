@@ -13,10 +13,10 @@
  * 支持的 provider：https://docs.astro.build/en/reference/font-provider-reference/#built-in-providers
  *   "google"     - Google Fonts
  *   "fontsource" - Fontsource
- *   "local"      - 本地字体文件
+ *   "local"      - 本地字体文件（推荐，不依赖外部 CDN）
  *   "bunny"      - Bunny Fonts
  *   "fontshare"  - Fontshare
- *   "npm"        - NPM 包（如 @fontsource/*）
+ *   "npm"        - NPM 包（如 @fontsource/*，构建时从 jsDelivr 下载，国内网络可能失败）
  *
  * 本地字体子集化：在 fontConfig.subsetFonts 中添加对应 cssVariable 的配置，
  * 构建时脚本会自动扫描页面字符并生成轻量 woff2 子集。
@@ -30,28 +30,119 @@ export const fontsList: FontDefinition[] = [
 	{
 		name: "Zen Maru Gothic",
 		cssVariable: "--font-zen-maru-gothic",
-		provider: "fontsource",
-		weights: ["300", "400", "500", "600", "700"],
-		styles: ["normal"],
-		subsets: ["latin", "cyrillic"],
+		provider: "local",
+		options: {
+			variants: [
+				{
+					weight: "300",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-latin-300-normal.woff2",
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-cyrillic-300-normal.woff2",
+					],
+				},
+				{
+					weight: "400",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-latin-400-normal.woff2",
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-cyrillic-400-normal.woff2",
+					],
+				},
+				{
+					weight: "500",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-latin-500-normal.woff2",
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-cyrillic-500-normal.woff2",
+					],
+				},
+				{
+					weight: "700",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-latin-700-normal.woff2",
+						"./public/assets/fonts/zen-maru-gothic/zen-maru-gothic-cyrillic-700-normal.woff2",
+					],
+				},
+			],
+		},
 		fallbacks: ["sans-serif"],
 	},
 	{
 		name: "Inter",
 		cssVariable: "--font-inter",
-		provider: "fontsource",
-		weights: ["300", "400", "500", "600", "700"],
-		styles: ["normal"],
-		subsets: ["latin", "cyrillic"],
+		provider: "local",
+		options: {
+			variants: [
+				{
+					weight: "300",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/inter/inter-latin-300-normal.woff2",
+						"./public/assets/fonts/inter/inter-cyrillic-300-normal.woff2",
+					],
+				},
+				{
+					weight: "400",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/inter/inter-latin-400-normal.woff2",
+						"./public/assets/fonts/inter/inter-cyrillic-400-normal.woff2",
+					],
+				},
+				{
+					weight: "500",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/inter/inter-latin-500-normal.woff2",
+						"./public/assets/fonts/inter/inter-cyrillic-500-normal.woff2",
+					],
+				},
+				{
+					weight: "600",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/inter/inter-latin-600-normal.woff2",
+						"./public/assets/fonts/inter/inter-cyrillic-600-normal.woff2",
+					],
+				},
+				{
+					weight: "700",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/inter/inter-latin-700-normal.woff2",
+						"./public/assets/fonts/inter/inter-cyrillic-700-normal.woff2",
+					],
+				},
+			],
+		},
 		fallbacks: ["sans-serif"],
 	},
 	{
 		name: "JetBrains Mono",
 		cssVariable: "--font-jetbrains-mono",
-		provider: "fontsource",
-		weights: ["400", "700"],
-		styles: ["normal"],
-		subsets: ["latin", "cyrillic"],
+		provider: "local",
+		options: {
+			variants: [
+				{
+					weight: "400",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2",
+						"./public/assets/fonts/jetbrains-mono/jetbrains-mono-cyrillic-400-normal.woff2",
+					],
+				},
+				{
+					weight: "700",
+					style: "normal",
+					src: [
+						"./public/assets/fonts/jetbrains-mono/jetbrains-mono-latin-700-normal.woff2",
+						"./public/assets/fonts/jetbrains-mono/jetbrains-mono-cyrillic-700-normal.woff2",
+					],
+				},
+			],
+		},
 		fallbacks: [
 			"ui-monospace",
 			"SFMono-Regular",

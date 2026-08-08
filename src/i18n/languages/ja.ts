@@ -391,6 +391,13 @@ export const ja: Translation = {
 	[Key.calendarHeatmapWeek]: "{month}月第{week}週、{count}記事",
 	[Key.advertisement]: "広告",
 
+	// カテゴリ＋タグページ
+	[Key.categoriesTagsPage]: "カテゴリ・タグ",
+	[Key.categoriesTagsSubtitle]: "カテゴリとタグの視覚的概要",
+	// アーカイブヒートマップ
+	[Key.postHeatmap]: "記事分布",
+	[Key.githubHeatmap]: "GitHub貢献",
+
 	[Key.shareArticle]: "共有",
 	[Key.generatingPoster]: "ポスター生成中...",
 	[Key.copied]: "コピーしました",
@@ -473,4 +480,10 @@ export const ja: Translation = {
 		[Key.projectsVisit]: "訪問",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "該当なし",
+
+	// サイトナビ
+	[Key.siteNavTitle]: "サイトナビ",
+	[Key.siteNavSubtitle]: "個人サイト、ツール、ブックマーク",
+	[Key.siteNavFilterAll]: "すべて",
+	[Key.siteNavEmpty]: "登録されたサイトはありません",
 };

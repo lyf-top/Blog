@@ -79,6 +79,7 @@ export type SiteConfig = {
 
 	// 页面开关配置
 	pages: {
+		siteNav: boolean; // 网站导航页面开关
 		booknav: boolean; // 书签导航页面开关
 			timeline: boolean; // 时间线页面开关
 			projects: boolean; // 项目展示页面开关
@@ -89,6 +90,14 @@ export type SiteConfig = {
 		gallery: boolean; // 相册页面开关
 		anime: boolean; // 追番页面开关
 		dynamic: boolean; // 动态页面开关
+	};
+
+	// 归档页热力图
+	heatmap?: {
+		github?: {
+			enabled: boolean;
+			username: string;
+		};
 	};
 
 	// 分类导航栏开关

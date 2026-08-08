@@ -25,13 +25,14 @@ const getDynamicNavBarConfig = (): NavBarConfig => {
 			// 归档
 			LinkPresets.Archive,
 
-			// 分类
+			// 分类标签
 			LinkPresets.Categories,
 
-			// 标签
-			LinkPresets.Tags,
 		],
 	});
+
+	// 网站导航
+	links.push(LinkPresets.SiteNav);
 
 	//社交及其子菜单
 	links.push({
@@ -195,6 +196,12 @@ export const LinkPresets: Record<string, NavBarLink> = {
 		url: "/booknav/",
 		icon: "material-symbols:bookmarks",
 		pageKey: "booknav",
+	},
+	SiteNav: {
+		name: "网站导航",
+		url: "/nav/",
+		icon: "material-symbols:public",
+		pageKey: "siteNav",
 	},
 };
 

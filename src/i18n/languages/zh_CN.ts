@@ -383,6 +383,13 @@ export const zh_CN: Translation = {
 	[Key.calendarHeatmapWeek]: "{month}月第{week}周，{count}篇文章",
 	[Key.advertisement]: "广告",
 
+	// 分类标签合一页
+	[Key.categoriesTagsPage]: "分类标签",
+	[Key.categoriesTagsSubtitle]: "可视化浏览文章分类与标签",
+	// 归档页热力图
+	[Key.postHeatmap]: "文章分布",
+	[Key.githubHeatmap]: "GitHub 贡献",
+
 	[Key.shareArticle]: "分享",
 	[Key.generatingPoster]: "海报生成中...",
 	[Key.copied]: "已复制",
@@ -463,4 +470,10 @@ export const zh_CN: Translation = {
 		[Key.projectsVisit]: "前往",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "暂无匹配项目",
+
+	// 网站导航
+	[Key.siteNavTitle]: "网站导航",
+	[Key.siteNavSubtitle]: "收录个人网站、常用工具和收藏网站",
+	[Key.siteNavFilterAll]: "全部",
+	[Key.siteNavEmpty]: "暂无收录的网站",
 };

@@ -1,0 +1,184 @@
+---
+import type { Category } from "@/utils/content-utils";
+
+const { categories } = Astro.props;
+const chartData = (categories as { name: string; count: number; url: string }[]).map((c) => ({
+	name: c.name,
+	value: c.count,
+	url: c.url,
+}));
+---
+
+<div id="category-rose-container" class="category-rose"
+	data-chart-data={JSON.stringify(chartData)}>
+	<div class="category-rose__layout">
+		<div id="category-rose-chart" class="category-rose__chart"></div>
+		<div class="category-rose__list">
+			{(categories as { name: string; count: number; url: string }[]).map((cat) => (
+				<a href={cat.url} class="category-rose__list-item">
+					<span class="category-rose__list-name">{cat.name}</span>
+					<span class="category-rose__list-count">{cat.count} 篇</span>
+				</a>
+			))}
+		</div>
+	</div>
+</div>
+
+<script is:inline>
+	(function () {
+		if (window.__fireflyCategoryRoseInit) return;
+		window.__fireflyCategoryRoseInit = true;
+
+		let chart = null;
+		let chartLoaded = false;
+
+		function getIsDark() {
+			return document.documentElement.classList.contains("dark");
+		}
+
+		function getThemeColors() {
+			const style = getComputedStyle(document.documentElement);
+			const primary = style.getPropertyValue("--primary").trim() || "#3b82f6";
+			const textColor = getIsDark() ? "#e5e7eb" : "#374151";
+			const subTextColor = getIsDark() ? "#9ca3af" : "#6b7280";
+			return { primary, textColor, subTextColor };
+		}
+
+		function renderChart(container, chartData) {
+			const { primary, textColor, subTextColor } = getThemeColors();
+
+			if (!chart) {
+				chart = window.echarts.init(container);
+			}
+
+			chart.setOption({
+				tooltip: {
+					trigger: "item",
+					backgroundColor: getIsDark() ? "#1f2937" : "#fff",
+					borderColor: getIsDark() ? "#374151" : "#e5e7eb",
+					textStyle: { color: textColor },
+					formatter: function (params) {
+						return params.name + "<br/>文章数: " + params.value;
+					},
+				},
+				legend: { show: false },
+				series: [
+					{
+						type: "pie",
+						roseType: "area",
+						radius: ["20%", "75%"],
+						center: ["50%", "50%"],
+						itemStyle: {
+							borderRadius: 4,
+							borderColor: getIsDark() ? "#1f2937" : "#fff",
+							borderWidth: 2,
+						},
+						label: {
+							color: textColor,
+							fontSize: 12,
+							formatter: "{b}\n{d}%",
+						},
+						emphasis: {
+							label: { fontSize: 16, fontWeight: "bold" },
+							scaleSize: 10,
+						},
+						data: chartData,
+					},
+				],
+			});
+
+			chart.off("click");
+			chart.on("click", function (params) {
+				if (params.data && params.data.url) {
+					window.location.href = params.data.url;
+				}
+			});
+		}
+
+		function init() {
+			const container = document.getElementById("category-rose-chart");
+			if (!container) return;
+			const dataEl = document.getElementById("category-rose-container");
+			if (!dataEl) return;
+
+			let chartData;
+			try {
+				chartData = JSON.parse(dataEl.dataset.chartData || "[]");
+			} catch {
+				return;
+			}
+			if (!chartData.length) return;
+
+			if (window.echarts) {
+				chartLoaded = true;
+				renderChart(container, chartData);
+			} else {
+				const script = document.createElement("script");
+				script.src =
+					"https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js";
+				script.onload = function () {
+					chartLoaded = true;
+					renderChart(container, chartData);
+				};
+				document.head.appendChild(script);
+			}
+		}
+
+		// 主题切换重渲染
+		function onThemeChange() {
+			if (!chart || !chartLoaded) return;
+			const container = document.getElementById("category-rose-chart");
+			const dataEl = document.getElementById("category-rose-container");
+			if (!container || !dataEl) return;
+			let chartData;
+			try {
+				chartData = JSON.parse(dataEl.dataset.chartData || "[]");
+			} catch {
+				return;
+			}
+			renderChart(container, chartData);
+		}
+
+		const darkObserver = new MutationObserver(function (mutations) {
+			for (const m of mutations) {
+				if (
+					m.type === "attributes" &&
+					m.attributeName === "class"
+				) {
+					onThemeChange();
+					break;
+				}
+			}
+		});
+
+		function bindObservers() {
+			darkObserver.disconnect();
+			darkObserver.observe(document.documentElement, {
+				attributes: true,
+				attributeFilter: ["class"],
+			});
+		}
+		bindObservers();
+
+		// Swup 切页前销毁
+		document.addEventListener("swup:willReplaceContent", function () {
+			if (chart) {
+				chart.dispose();
+				chart = null;
+				chartLoaded = false;
+			}
+		});
+
+		// 初始化
+		if (document.readyState === "loading") {
+			document.addEventListener("DOMContentLoaded", init);
+		} else {
+			init();
+		}
+		document.addEventListener("astro:page-load", init);
+		document.addEventListener("swup:contentReplaced", function () {
+			bindObservers();
+			init();
+		});
+	})();
+</script>

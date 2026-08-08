@@ -1,0 +1,232 @@
+---
+import type { TagGraphData } from "@/utils/tag-graph-data";
+
+const { graph } = Astro.props;
+const chartData = {
+	...graph,
+	nodes: graph.nodes.map((node: { name: string; value: number; url?: string }) => ({
+		...node,
+		category:
+			node.value >= 5
+				? "高频标签"
+				: node.value >= 2
+					? "常用标签"
+					: "低频标签",
+	})),
+};
+---
+
+<div id="tag-graph-container" class="tag-graph"
+	data-graph={JSON.stringify(chartData)}>
+	<div id="tag-graph-chart" class="tag-graph__chart"></div>
+</div>
+
+<script is:inline>
+	(function () {
+		if (window.__fireflyTagGraphInit) return;
+		window.__fireflyTagGraphInit = true;
+
+		let chart = null;
+		let chartLoaded = false;
+
+		function getIsDark() {
+			return document.documentElement.classList.contains("dark");
+		}
+
+		function getThemeColors() {
+			const style = getComputedStyle(document.documentElement);
+			const primary = style.getPropertyValue("--primary").trim() || "#3b82f6";
+			const textColor = getIsDark() ? "#e5e7eb" : "#374151";
+			const subTextColor = getIsDark() ? "#9ca3af" : "#6b7280";
+			return { primary, textColor, subTextColor };
+		}
+
+		function renderChart(container, graphData) {
+			const { primary, textColor, subTextColor } = getThemeColors();
+
+			const categories = [
+				{ name: "高频标签", itemStyle: { color: primary } },
+				{
+					name: "常用标签",
+					itemStyle: {
+						color: getIsDark()
+							? "oklch(0.65 0.1 var(--hue))"
+							: "oklch(0.75 0.1 var(--hue))",
+					},
+				},
+				{
+					name: "低频标签",
+					itemStyle: { color: subTextColor },
+				},
+			];
+
+			if (!chart) {
+				chart = window.echarts.init(container);
+			}
+
+			const maxVal = Math.max(...graphData.nodes.map((n) => n.value), 1);
+
+			chart.setOption({
+				tooltip: {
+					trigger: "item",
+					backgroundColor: getIsDark() ? "#1f2937" : "#fff",
+					borderColor: getIsDark() ? "#374151" : "#e5e7eb",
+					textStyle: { color: textColor },
+					formatter: function (params) {
+						if (params.dataType === "node") {
+							return (
+								params.data.name +
+								"<br/>文章数: " +
+								params.data.value
+							);
+						}
+						if (params.dataType === "edge") {
+							return (
+								params.data.source +
+								" ↔ " +
+								params.data.target +
+								"<br/>共现: " +
+								params.data.value +
+								" 次"
+							);
+						}
+						return "";
+					},
+				},
+				legend: { show: false },
+				series: [
+					{
+						type: "graph",
+						layout: "force",
+						roam: true,
+						draggable: true,
+						categories: categories,
+						data: graphData.nodes.map((n) => ({
+							...n,
+							symbolSize: Math.max(
+								8,
+								8 + (n.value / maxVal) * 32,
+							),
+							label: {
+								show: n.value >= 2,
+								color: textColor,
+								fontSize: 10 + (n.value / maxVal) * 6,
+							},
+						})),
+						links: graphData.links.map((l) => ({
+							...l,
+							lineStyle: {
+								width: Math.max(
+									0.5,
+									(Math.min(l.value, 8) / 8) * 3,
+								),
+								opacity: 0.3,
+								curveness: 0.15,
+							},
+						})),
+						force: {
+							repulsion: 150,
+							edgeLength: [44, 150],
+							gravity: 0.08,
+						},
+						emphasis: {
+							focus: "adjacency",
+							lineStyle: { width: 3, opacity: 0.8 },
+						},
+						edgeSymbol: ["none", "none"],
+					},
+				],
+			});
+
+			chart.off("click");
+			chart.on("click", function (params) {
+				if (params.dataType === "node" && params.data.url) {
+					window.location.href = params.data.url;
+				}
+			});
+		}
+
+		function init() {
+			const container = document.getElementById("tag-graph-chart");
+			if (!container) return;
+			const dataEl = document.getElementById("tag-graph-container");
+			if (!dataEl) return;
+
+			let graphData;
+			try {
+				graphData = JSON.parse(dataEl.dataset.graph || "{}");
+			} catch {
+				return;
+			}
+			if (!graphData.nodes || !graphData.nodes.length) return;
+
+			if (window.echarts) {
+				chartLoaded = true;
+				renderChart(container, graphData);
+			} else {
+				const script = document.createElement("script");
+				script.src =
+					"https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js";
+				script.onload = function () {
+					chartLoaded = true;
+					renderChart(container, graphData);
+				};
+				document.head.appendChild(script);
+			}
+		}
+
+		function onThemeChange() {
+			if (!chart || !chartLoaded) return;
+			const container = document.getElementById("tag-graph-chart");
+			const dataEl = document.getElementById("tag-graph-container");
+			if (!container || !dataEl) return;
+			let graphData;
+			try {
+				graphData = JSON.parse(dataEl.dataset.graph || "{}");
+			} catch {
+				return;
+			}
+			renderChart(container, graphData);
+		}
+
+		const darkObserver = new MutationObserver(function (mutations) {
+			for (const m of mutations) {
+				if (
+					m.type === "attributes" &&
+					m.attributeName === "class"
+				) {
+					onThemeChange();
+					break;
+				}
+			}
+		});
+
+		function bindObservers() {
+			darkObserver.disconnect();
+			darkObserver.observe(document.documentElement, {
+				attributes: true,
+				attributeFilter: ["class"],
+			});
+		}
+		bindObservers();
+
+		document.addEventListener("swup:willReplaceContent", function () {
+			if (chart) {
+				chart.dispose();
+				chart = null;
+				chartLoaded = false;
+			}
+		});
+
+		if (document.readyState === "loading") {
+			document.addEventListener("DOMContentLoaded", init);
+		} else {
+			init();
+		}
+		document.addEventListener("astro:page-load", init);
+		document.addEventListener("swup:contentReplaced", function () {
+			bindObservers();
+			init();
+		});
+	})();
+</script>

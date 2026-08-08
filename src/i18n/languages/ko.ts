@@ -390,6 +390,13 @@ export const ko: Translation = {
 	[Key.calendarHeatmapWeek]: "{month}의 {week}주차, 게시글 {count}개",
 	[Key.advertisement]: "광고",
 
+	// 카테고리 + 태그 페이지
+	[Key.categoriesTagsPage]: "카테고리 & 태그",
+	[Key.categoriesTagsSubtitle]: "카테고리와 태그 시각화",
+	// 아카이브 히트맵
+	[Key.postHeatmap]: "글 분포",
+	[Key.githubHeatmap]: "GitHub 기여",
+
 	[Key.shareArticle]: "공유",
 	[Key.generatingPoster]: "포스터 생성 중...",
 	[Key.copied]: "복사됨",
@@ -472,4 +479,10 @@ export const ko: Translation = {
 		[Key.projectsVisit]: "방문",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "해당 없음",
+
+	// 사이트 네비게이션
+	[Key.siteNavTitle]: "사이트 네비게이션",
+	[Key.siteNavSubtitle]: "개인 사이트, 도구 및 북마크",
+	[Key.siteNavFilterAll]: "전체",
+	[Key.siteNavEmpty]: "등록된 사이트가 없습니다",
 };

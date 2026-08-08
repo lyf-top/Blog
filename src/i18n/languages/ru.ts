@@ -395,6 +395,13 @@ export const ru: Translation = {
 	[Key.calendarHeatmapWeek]: "Неделя {week} {month}, {count} записей",
 	[Key.advertisement]: "Реклама",
 
+	// Категории + теги
+	[Key.categoriesTagsPage]: "Категории и теги",
+	[Key.categoriesTagsSubtitle]: "Визуальный обзор категорий и тегов",
+	// Тепловая карта архива
+	[Key.postHeatmap]: "Распределение статей",
+	[Key.githubHeatmap]: "Вклад на GitHub",
+
 	[Key.shareArticle]: "Поделиться",
 	[Key.generatingPoster]: "Создание постера...",
 	[Key.copied]: "Скопировано",
@@ -477,4 +484,10 @@ export const ru: Translation = {
 		[Key.projectsVisit]: "Перейти",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "Не найдено",
+
+	// Навигация по сайтам
+	[Key.siteNavTitle]: "Навигация",
+	[Key.siteNavSubtitle]: "Личные сайты, инструменты и закладки",
+	[Key.siteNavFilterAll]: "Все",
+	[Key.siteNavEmpty]: "Сайтов пока нет",
 };

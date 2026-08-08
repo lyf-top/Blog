@@ -1,0 +1,322 @@
+---
+const markerEmoji = "🐢";
+const markerImage = "";
+const markerFaceRight = true;
+---
+
+<div
+  class="scroll-progress-track"
+  style="transform: scaleX(0)"
+  aria-label="阅读进度"
+  role="progressbar"
+  aria-valuemin="0"
+  aria-valuemax="100"
+  aria-valuenow="0"
+>
+  <div class="scroll-progress-bar"></div>
+  <span class="scroll-progress-marker">
+    <span class="scroll-progress-marker-bob">
+      {markerImage ? (
+        <img src={markerImage} alt="" />
+      ) : (
+        <span class="scroll-progress-marker-glyphs">{markerEmoji}</span>
+      )}
+    </span>
+  </span>
+</div>
+
+<script is:inline define:vars={{ markerEmoji, markerImage, markerFaceRight }}>
+(function () {
+  if (window.__fireflyScrollProgressInit) return;
+  window.__fireflyScrollProgressInit = true;
+
+  const SCROLL_DIR_THRESHOLD = 2;
+  const TRACK_VISIBLE_DELAY = 120;
+
+  const track = document.querySelector(".scroll-progress-track");
+  if (!track) return;
+
+  const bar = track.querySelector(".scroll-progress-bar");
+  const marker = track.querySelector(".scroll-progress-marker");
+  const glyphs = marker?.querySelector(".scroll-progress-marker-glyphs");
+  const img = marker?.querySelector("img");
+
+  let docHeightCache = 0;
+  let viewHeightCache = 0;
+  let scrollableCache = 0;
+  let dirty = true;
+  let rafId = null;
+  let lastScrollTop = 0;
+  let scrollDirection = 1;
+  let lastFacingEast = null;
+  let visibleTimer = null;
+
+  // ------------------------------------------------------------------
+  // 文档高度重算（按需，避免每帧强制布局）
+  // ------------------------------------------------------------------
+  function markDirty() {
+    dirty = true;
+  }
+
+  function recalcDocHeight() {
+    docHeightCache = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
+    viewHeightCache = window.innerHeight;
+    scrollableCache = Math.max(docHeightCache - viewHeightCache, 0);
+    dirty = false;
+  }
+
+  // 首次计算
+  recalcDocHeight();
+
+  // 图片加载后重算
+  document.addEventListener("load", function (e) {
+    if (e.target && (e.target.tagName === "IMG" || e.target.tagName === "PICTURE")) {
+      markDirty();
+    }
+  }, true);
+
+  // 布局变化时重算
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      markDirty();
+    }).observe(document.documentElement);
+  }
+  window.addEventListener("resize", markDirty, { passive: true });
+
+  // ------------------------------------------------------------------
+  // 朝向判断
+  // ------------------------------------------------------------------
+  function updateMarkerDirection(scrollTop) {
+    const delta = scrollTop - lastScrollTop;
+    if (Math.abs(delta) >= SCROLL_DIR_THRESHOLD) {
+      scrollDirection = delta > 0 ? 1 : -1;
+      lastScrollTop = scrollTop;
+    }
+
+    const facingEast = markerFaceRight
+      ? scrollDirection > 0
+      : scrollDirection < 0;
+
+    if (facingEast === lastFacingEast) return;
+    lastFacingEast = facingEast;
+
+    const el = glyphs || img;
+    if (!el) return;
+
+    if (facingEast) {
+      el.classList.add("scroll-progress-marker--east");
+      el.classList.remove("scroll-progress-marker--west");
+    } else {
+      el.classList.add("scroll-progress-marker--west");
+      el.classList.remove("scroll-progress-marker--east");
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 渲染帧
+  // ------------------------------------------------------------------
+  function render() {
+    rafId = null;
+
+    if (dirty) recalcDocHeight();
+
+    const scrollTop = document.documentElement.scrollTop || window.scrollY || 0;
+    const atBottom = scrollTop >= scrollableCache - 1;
+    const progress = scrollableCache > 0
+      ? (atBottom ? 1 : Math.min(scrollTop / scrollableCache, 1))
+      : 0;
+
+    // 进度条
+    track.style.setProperty("--scroll-progress", String(progress));
+    // aria
+    track.setAttribute("aria-valuenow", String(Math.round(progress * 100)));
+
+    // 显现 / 隐藏
+    if (visibleTimer) { clearTimeout(visibleTimer); visibleTimer = null; }
+    if (progress > 0 && !track.classList.contains("scroll-progress-track--visible")) {
+      track.classList.add("scroll-progress-track--visible");
+    } else if (progress === 0 && track.classList.contains("scroll-progress-track--visible")) {
+      visibleTimer = setTimeout(function () {
+        track.classList.remove("scroll-progress-track--visible");
+      }, TRACK_VISIBLE_DELAY);
+    }
+
+    // 标记位置 & 朝向
+    if (marker) {
+      const trackWidth = track.offsetWidth;
+      marker.style.transform =
+        "translate3d(" + (progress * trackWidth) + "px, -50%, 0) translate3d(-50%, 0, 0)";
+      updateMarkerDirection(scrollTop);
+    }
+  }
+
+  function scheduleRender() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(render);
+  }
+
+  window.addEventListener("scroll", scheduleRender, { passive: true });
+
+  // ------------------------------------------------------------------
+  // 初始化朝向
+  // ------------------------------------------------------------------
+  function initDirection() {
+    lastFacingEast = markerFaceRight;
+    const el = glyphs || img;
+    if (!el) return;
+    if (markerFaceRight) {
+      el.classList.add("scroll-progress-marker--east");
+    }
+    lastScrollTop = document.documentElement.scrollTop || window.scrollY || 0;
+  }
+
+  // ------------------------------------------------------------------
+  // 重置
+  // ------------------------------------------------------------------
+  function reset() {
+    markDirty();
+    recalcDocHeight();
+    lastScrollTop = 0;
+    scrollDirection = 1;
+    lastFacingEast = null;
+    initDirection();
+    scheduleRender();
+  }
+
+  // ------------------------------------------------------------------
+  // Swup & Astro 切页
+  // ------------------------------------------------------------------
+  function bindSwup() {
+    if (!window.swup?.hooks) return;
+    window.swup.hooks.on("content:replace", reset);
+    window.swup.hooks.on("page:view", scheduleRender);
+  }
+
+  if (window.swup?.hooks) {
+    bindSwup();
+  } else {
+    document.addEventListener("swup:enable", bindSwup, { once: true });
+  }
+  document.addEventListener("astro:page-load", reset);
+
+  // ------------------------------------------------------------------
+  // 启动
+  // ------------------------------------------------------------------
+  initDirection();
+  scheduleRender();
+})();
+</script>
+
+<style is:global>
+  /* -------------------------------------------------------------------
+     轨道
+     ------------------------------------------------------------------- */
+  .scroll-progress-track {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 5px;
+    z-index: 10001;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--primary, #3b82f6) 12%, transparent);
+    opacity: 0;
+    transform-origin: left center;
+    transition: opacity 0.2s ease;
+  }
+
+  .scroll-progress-track--visible {
+    opacity: 1;
+  }
+
+  /* -------------------------------------------------------------------
+     进度填充（静态彩虹渐变，scaleX 跟手）
+     ------------------------------------------------------------------- */
+  .scroll-progress-bar {
+    position: absolute;
+    inset: 0;
+    transform: scaleX(var(--scroll-progress, 0));
+    transform-origin: left center;
+    border-radius: 0 999px 999px 0;
+    /* 彩虹渐变 */
+    background: linear-gradient(
+      90deg,
+      #ef4444,
+      #f97316,
+      #eab308,
+      var(--primary, #3b82f6),
+      #6366f1,
+      #a855f7,
+      #ec4899
+    );
+  }
+
+  /* -------------------------------------------------------------------
+     右端标记
+     ------------------------------------------------------------------- */
+  .scroll-progress-marker {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    transform: translate3d(0, -50%, 0) translate3d(-50%, 0, 0);
+    will-change: transform;
+  }
+
+  .scroll-progress-marker-bob {
+    display: block;
+  }
+
+  .scroll-progress-marker-glyphs {
+    font-size: 1.35rem;
+    line-height: 1;
+    letter-spacing: -0.1em;
+    display: block;
+    transition: transform 0.2s ease;
+    white-space: nowrap;
+  }
+
+  .scroll-progress-marker img {
+    width: 1.75rem;
+    height: 2rem;
+    display: block;
+    object-fit: contain;
+    transition: transform 0.2s ease;
+  }
+
+  /* 朝向：下滑（默认朝右） */
+  .scroll-progress-marker--east {
+    transform: scaleX(-1);
+  }
+
+  /* 朝向：上滑（默认朝左） */
+  .scroll-progress-marker--west {
+    transform: scaleX(1);
+  }
+
+  /* -------------------------------------------------------------------
+     桌面端高度（与 #progress-bar 统一）
+     ------------------------------------------------------------------- */
+  @media (min-width: 768px) {
+    .scroll-progress-track {
+      height: 10px;
+    }
+
+    .scroll-progress-marker-glyphs {
+      font-size: 1.5rem;
+    }
+  }
+
+  /* -------------------------------------------------------------------
+     减少动效
+     ------------------------------------------------------------------- */
+  @media (prefers-reduced-motion: reduce) {
+    .scroll-progress-marker-glyphs,
+    .scroll-progress-marker img {
+      transition: none;
+    }
+
+    .scroll-progress-track {
+      transition: none;
+    }
+  }
+</style>

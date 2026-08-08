@@ -1,0 +1,608 @@
+---
+import { Icon } from "astro-icon/components";
+import { siteConfig } from "@/config";
+import I18nKey from "@/i18n/i18nKey";
+import { i18n } from "@/i18n/translation";
+import MainGridLayout from "@/layouts/MainGridLayout.astro";
+import { getCollection } from "astro:content";
+
+if (!siteConfig.pages.siteNav) {
+	return Astro.redirect("/404/");
+}
+
+const allEntries = await getCollection("daohang");
+
+const categoryMap = new Map<string, typeof allEntries>();
+const allCategories: string[] = [];
+
+allEntries.forEach((entry) => {
+	const cat = entry.data.category || "未分类";
+	if (!categoryMap.has(cat)) {
+		categoryMap.set(cat, []);
+		allCategories.push(cat);
+	}
+	categoryMap.get(cat)!.push(entry);
+});
+
+const categoryOrder: Record<string, number> = {
+	"我的网站": 0,
+	"常用网站": 1,
+	"资源网站": 2,
+	"工具网站": 3,
+	"大佬博客": 4,
+	"学习网站": 5,
+	"文档": 6,
+	"其他网站": 7,
+};
+
+const sortedCategories = [...allCategories].sort((a, b) => {
+	return (categoryOrder[a] ?? 99) - (categoryOrder[b] ?? 99);
+});
+
+const sortedData = new Map(
+	[...categoryMap.entries()]
+		.sort(([a], [b]) => {
+			return (categoryOrder[a] ?? 99) - (categoryOrder[b] ?? 99);
+		})
+		.map(([cat, items]) => [
+			cat,
+			[...items].sort((a, b) => {
+				const orderA = a.data.order ?? 99;
+				const orderB = b.data.order ?? 99;
+				return orderA - orderB;
+			}),
+		]),
+);
+
+const categoryIcons: Record<string, string> = {
+	"我的网站": "material-symbols:person",
+	"常用网站": "material-symbols:star",
+	"资源网站": "material-symbols:folder",
+	"工具网站": "material-symbols:build",
+	"大佬博客": "material-symbols:auto-stories",
+	"学习网站": "material-symbols:school",
+	"文档": "material-symbols:description",
+	"其他网站": "material-symbols:link",
+};
+
+const getCategoryIcon = (cat: string) => {
+	return categoryIcons[cat] || "material-symbols:link";
+};
+
+const categoryCounts: Record<string, number> = {};
+for (const [cat, items] of sortedData) {
+	categoryCounts[cat] = items.length;
+}
+
+const allSites = sortedCategories.flatMap((cat) => sortedData.get(cat)!);
+
+const pageTitle = i18n(I18nKey.siteNavTitle);
+const pageSubtitle = i18n(I18nKey.siteNavSubtitle);
+const filterAllLabel = i18n(I18nKey.siteNavFilterAll);
+const emptyLabel = i18n(I18nKey.siteNavEmpty);
+---
+
+<MainGridLayout title={pageTitle} description={pageSubtitle}>
+	<script slot="head" is:inline>
+		(function() {
+			function initSiteNavTabs() {
+				var tabNav = document.querySelector('[data-sitenav-tab-nav]');
+				var tabButtons = document.querySelectorAll('[data-sitenav-tab]');
+				var sections = document.querySelectorAll('[data-sitenav-section]');
+				var indicator = document.querySelector('[data-sitenav-tab-indicator]');
+				if (!tabNav || !tabButtons.length || !indicator) return;
+
+				function updateIndicator(targetBtn) {
+					if (!indicator || !targetBtn) return;
+					indicator.style.left = targetBtn.offsetLeft + 'px';
+					indicator.style.top = targetBtn.offsetTop + 'px';
+					indicator.style.width = targetBtn.offsetWidth + 'px';
+					indicator.style.height = targetBtn.offsetHeight + 'px';
+					indicator.style.opacity = '1';
+				}
+
+				function activateTab(targetTab) {
+					if (!targetTab) return;
+					var targetButton = Array.from(tabButtons).find(function(btn) {
+						return btn.dataset.sitenavTab === targetTab;
+					});
+					if (!targetButton) return;
+
+					tabButtons.forEach(function(btn) {
+						btn.classList.remove('sitenav-tab-btn-active');
+						btn.classList.add('sitenav-tab-btn-inactive');
+						btn.disabled = false;
+					});
+					targetButton.classList.remove('sitenav-tab-btn-inactive');
+					targetButton.classList.add('sitenav-tab-btn-active');
+					targetButton.disabled = true;
+
+					requestAnimationFrame(function() { updateIndicator(targetButton); });
+
+					sections.forEach(function(section) {
+						if (section.dataset.sitenavSection === targetTab) {
+							section.classList.remove('hidden');
+							var cards = section.querySelectorAll('.nav-site-card');
+							cards.forEach(function(card) {
+								card.style.animation = 'none';
+								card.offsetHeight;
+								card.style.animation = '';
+							});
+						} else {
+							section.classList.add('hidden');
+						}
+					});
+
+					var nextHash = targetTab === 'all' ? window.location.pathname : '#tools-' + encodeURIComponent(targetTab);
+					if (window.location.hash !== ('#tools-' + encodeURIComponent(targetTab)) && targetTab !== 'all') {
+						window.history.replaceState(null, '', nextHash);
+					} else if (targetTab === 'all' && window.location.hash) {
+						window.history.replaceState(null, '', window.location.pathname);
+					}
+				}
+
+				tabButtons.forEach(function(button) {
+					button.addEventListener('click', function() {
+						var targetTab = button.dataset.sitenavTab;
+						if (targetTab) activateTab(targetTab);
+					});
+				});
+
+				function getTabFromHash() {
+					var hash = window.location.hash.replace(/^#tools-/, '');
+					if (!hash) return '';
+					try { return decodeURIComponent(hash); } catch(e) { return ''; }
+				}
+
+				var initialTab = getTabFromHash();
+				if (initialTab) {
+					activateTab(initialTab);
+				} else {
+					var activeBtn = tabNav.querySelector('.sitenav-tab-btn-active');
+					if (activeBtn) {
+						requestAnimationFrame(function() { updateIndicator(activeBtn); });
+					}
+				}
+
+				window.addEventListener('hashchange', function() {
+					var tabFromHash = getTabFromHash();
+					if (tabFromHash) activateTab(tabFromHash);
+				});
+
+				window.addEventListener('resize', function() {
+					var activeBtn = tabNav.querySelector('.sitenav-tab-btn-active');
+					if (activeBtn) updateIndicator(activeBtn);
+				});
+			}
+
+			if (document.readyState === "loading") {
+				document.addEventListener("DOMContentLoaded", initSiteNavTabs);
+			} else {
+				initSiteNavTabs();
+			}
+			document.addEventListener("astro:page-load", initSiteNavTabs);
+			document.addEventListener("astro:after-swap", initSiteNavTabs);
+			document.addEventListener("swup:contentReplaced", initSiteNavTabs);
+		})();
+	</script>
+
+	<div class="flex w-full rounded-[var(--radius-large)] overflow-hidden relative min-h-32">
+		<div class="card-base z-10 px-6 sm:px-9 py-6 relative w-full">
+			<div class="flex items-center gap-3 mb-3">
+				<div class="h-8 w-8 rounded-lg bg-(--primary) flex items-center justify-center text-white dark:text-black/70">
+					<Icon is:inline name="material-symbols:public" class="text-[1.5rem]" />
+				</div>
+				<div class="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{pageTitle}</div>
+			</div>
+			<p class="text-base text-neutral-600 dark:text-neutral-400 leading-relaxed mb-6">{pageSubtitle}</p>
+
+			{allSites.length > 0 && sortedCategories.length > 1 && (
+				<div class="sitenav-tab-wrapper">
+					<div class="sitenav-tab-pill" data-sitenav-tab-nav>
+						<div class="sitenav-tab-indicator" data-sitenav-tab-indicator></div>
+						<button data-sitenav-tab="all" class="sitenav-tab-btn sitenav-tab-btn-active">
+							{filterAllLabel}
+							<span class="sitenav-tab-badge">{allSites.length}</span>
+						</button>
+						{sortedCategories.map((cat) => (
+							<button data-sitenav-tab={cat} class="sitenav-tab-btn sitenav-tab-btn-inactive">
+								{cat}
+								<span class="sitenav-tab-badge">{categoryCounts[cat]}</span>
+							</button>
+						))}
+					</div>
+				</div>
+			)}
+
+			{allSites.length > 0 ? (
+				<div>
+					<div data-sitenav-section="all">
+						{sortedCategories.map((cat) => {
+							const catSites = sortedData.get(cat)!;
+							if (catSites.length === 0) return null;
+							return (
+								<div class="sitenav-category-group">
+									<div class="sitenav-category-header">
+										<div class="sitenav-category-icon">
+											<Icon name={getCategoryIcon(cat)} is:inline class="text-base" />
+										</div>
+										<span class="sitenav-category-title">{cat}</span>
+										<span class="sitenav-category-count">{catSites.length}</span>
+										<div class="sitenav-category-divider" />
+									</div>
+									<div class="sitenav-card-grid">
+										{catSites.map((site, index) => (
+											<a
+												href={site.data.url}
+												target="_blank"
+												rel="noopener noreferrer"
+												class="nav-site-card group"
+												data-category={cat}
+												style={`animation-delay: ${index * 60}ms`}
+											>
+												<div class="nav-site-jump-icon">
+													<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+														<path d="M7 17L17 7" />
+														<path d="M7 7h10v10" />
+													</svg>
+												</div>
+												<div class="flex items-center gap-2 mb-3">
+													{site.data.icon ? (
+														site.data.icon.startsWith('http') ? (
+															<img src={site.data.icon} alt={site.data.name} class="w-6 h-6 rounded object-contain shrink-0" />
+														) : (
+															<Icon name={site.data.icon} is:inline class="nav-site-icon text-2xl shrink-0" />
+														)
+													) : site.data.image ? (
+														<img src={site.data.image} alt={site.data.name} class="w-6 h-6 rounded object-contain shrink-0" />
+													) : (
+														<Icon name="material-symbols:language" is:inline class="nav-site-icon text-2xl shrink-0" />
+													)}
+													<h3 class="nav-site-title truncate">
+														{site.data.name}
+													</h3>
+												</div>
+												<p class="nav-site-desc">{site.data.description}</p>
+												<div class="nav-site-footer">
+													<span class="nav-site-host truncate">
+														{(() => {
+															try { return new URL(site.data.url).hostname; } catch { return site.data.url; }
+														})()}
+													</span>
+												</div>
+											</a>
+										))}
+									</div>
+								</div>
+							);
+						})}
+					</div>
+
+					{sortedCategories.map((cat) => {
+						const catSites = sortedData.get(cat)!;
+						if (catSites.length === 0) return null;
+						return (
+							<div data-sitenav-section={cat} class="hidden">
+								<div class="sitenav-card-grid">
+									{catSites.map((site, index) => (
+										<a
+											href={site.data.url}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="nav-site-card group"
+											data-category={cat}
+											style={`animation-delay: ${index * 60}ms`}
+										>
+											<div class="nav-site-jump-icon">
+												<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+													<path d="M7 17L17 7" />
+													<path d="M7 7h10v10" />
+												</svg>
+											</div>
+											<div class="flex items-center gap-2 mb-3">
+												{site.data.icon ? (
+													site.data.icon.startsWith('http') ? (
+														<img src={site.data.icon} alt={site.data.name} class="w-6 h-6 rounded object-contain shrink-0" />
+													) : (
+														<Icon name={site.data.icon} is:inline class="nav-site-icon text-2xl shrink-0" />
+													)
+												) : site.data.image ? (
+													<img src={site.data.image} alt={site.data.name} class="w-6 h-6 rounded object-contain shrink-0" />
+												) : (
+													<Icon name="material-symbols:language" is:inline class="nav-site-icon text-2xl shrink-0" />
+												)}
+												<h3 class="nav-site-title truncate">
+													{site.data.name}
+												</h3>
+											</div>
+											<p class="nav-site-desc">{site.data.description}</p>
+											<div class="nav-site-footer">
+												<span class="nav-site-host truncate">
+													{(() => {
+														try { return new URL(site.data.url).hostname; } catch { return site.data.url; }
+													})()}
+												</span>
+											</div>
+										</a>
+									))}
+								</div>
+							</div>
+						);
+					})}
+				</div>
+			) : (
+				<div class="nav-site-empty">
+					<Icon name="material-symbols:bookmark-outline" is:inline class="nav-site-empty-icon" />
+					<p class="nav-site-empty-text">{emptyLabel}</p>
+				</div>
+			)}
+		</div>
+	</div>
+</MainGridLayout>
+
+<style>
+	.sitenav-tab-wrapper {
+		margin-bottom: 1.5rem;
+	}
+
+	.sitenav-tab-pill {
+		position: relative;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		padding: 0.375rem;
+		border-radius: 1rem;
+		border: 1px solid var(--line-divider);
+		background: var(--btn-regular-bg);
+	}
+
+	.sitenav-tab-indicator {
+		position: absolute;
+		border-radius: 9999px;
+		background: var(--primary);
+		transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+								top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+								width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+								height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+		opacity: 0;
+		pointer-events: none;
+		z-index: 0;
+		box-shadow: 0 4px 14px oklch(0.4 0.1 var(--hue) / 0.25);
+	}
+
+	.sitenav-tab-btn {
+		position: relative;
+		z-index: 1;
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		padding: 0.375rem 0.875rem;
+		border: none;
+		border-radius: 9999px;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		white-space: nowrap;
+		cursor: pointer;
+		background: transparent;
+		transition: color 0.2s;
+		flex-shrink: 0;
+		font-family: inherit;
+	}
+
+	.sitenav-tab-btn-active {
+		color: #fff;
+		cursor: default;
+	}
+
+	.sitenav-tab-btn-inactive {
+		color: var(--btn-content);
+	}
+	.sitenav-tab-btn-inactive:hover {
+		color: var(--primary);
+	}
+
+	.sitenav-tab-badge {
+		font-size: 0.65rem;
+		padding: 0.0625rem 0.375rem;
+		border-radius: 9999px;
+		background: oklch(0.94 0.04 var(--hue));
+		color: var(--primary);
+		line-height: 1.4;
+	}
+	:root.dark .sitenav-tab-badge {
+		background: oklch(0.26 0.05 var(--hue));
+	}
+
+	.sitenav-tab-btn-active .sitenav-tab-badge {
+		background: rgba(255, 255, 255, 0.25);
+		color: #fff;
+	}
+
+	.sitenav-category-header {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 1.25rem;
+	}
+
+	.sitenav-category-icon {
+		width: 2rem;
+		height: 2rem;
+		border-radius: 0.65rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		background: oklch(0.94 0.05 var(--hue));
+		color: var(--primary);
+	}
+	:root.dark .sitenav-category-icon {
+		background: oklch(0.26 0.05 var(--hue));
+	}
+
+	.sitenav-category-title {
+		font-size: 1rem;
+		font-weight: 700;
+		color: var(--deep-text);
+	}
+
+	.sitenav-category-count {
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.125rem 0.5rem;
+		border-radius: 9999px;
+		background: oklch(0.94 0.04 var(--hue));
+		color: var(--primary);
+	}
+	:root.dark .sitenav-category-count {
+		background: oklch(0.26 0.05 var(--hue));
+	}
+
+	.sitenav-category-divider {
+		flex: 1;
+		height: 2px;
+		border-radius: 9999px;
+		background: linear-gradient(
+			to right,
+			oklch(0.72 0.08 var(--hue)),
+			oklch(0.72 0.08 var(--hue) / 0.15),
+			transparent
+		);
+	}
+
+	.sitenav-category-group + .sitenav-category-group {
+		margin-top: 2rem;
+	}
+
+	.sitenav-card-grid {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 1rem;
+	}
+	@media (max-width: 1024px) {
+		.sitenav-card-grid {
+			grid-template-columns: repeat(2, 1fr);
+		}
+	}
+	@media (max-width: 640px) {
+		.sitenav-card-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.nav-site-card {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		padding: 1.25rem;
+		border-radius: var(--radius-large, 0.75rem);
+		border: 1px solid color-mix(in oklch, var(--line-divider) 85%, transparent);
+		background: var(--card-bg);
+		text-decoration: none;
+		overflow: hidden;
+		opacity: 0;
+		transform: translateY(20px);
+		animation: sitenavCardSlideIn 0.5s ease-out forwards;
+		transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
+	}
+	.nav-site-card:hover {
+		border-color: var(--primary);
+		box-shadow: 0 8px 28px oklch(0.4 0.08 var(--hue) / 0.12);
+		transform: translateY(-2px);
+	}
+	:root.dark .nav-site-card:hover {
+		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+	}
+
+	.nav-site-icon {
+		color: var(--content-meta);
+		transition: color 300ms ease;
+	}
+	.nav-site-card:hover .nav-site-icon {
+		color: var(--primary);
+	}
+
+	.nav-site-title {
+		font-size: 1.125rem;
+		font-weight: 700;
+		color: var(--deep-text);
+		transition: color 300ms ease, transform 300ms ease;
+	}
+	.nav-site-card:hover .nav-site-title {
+		color: var(--primary);
+		transform: translateX(0.25rem);
+	}
+
+	.nav-site-jump-icon {
+		position: absolute;
+		top: 0.875rem;
+		right: 0.875rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.75rem;
+		height: 1.75rem;
+		border-radius: 0.5rem;
+		color: #fff;
+		background: var(--primary);
+		opacity: 0;
+		transform: scale(0.8) translateY(-4px);
+		transition: opacity 250ms cubic-bezier(0.4, 0, 0.2, 1), transform 250ms cubic-bezier(0.4, 0, 0.2, 1);
+		z-index: 2;
+		pointer-events: none;
+	}
+	.nav-site-card:hover .nav-site-jump-icon {
+		opacity: 1;
+		transform: scale(1) translateY(0);
+	}
+
+	.nav-site-desc {
+		margin: 0 0 0.75rem 0;
+		font-size: 0.875rem;
+		font-weight: 400;
+		color: var(--content-meta);
+		line-height: 1.5;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+		flex: 1;
+		min-height: 2.625rem;
+	}
+
+	.nav-site-footer {
+		display: flex;
+		align-items: center;
+		padding-top: 0.75rem;
+		border-top: 1px dashed color-mix(in oklch, var(--line-divider) 80%, transparent);
+		margin-top: auto;
+	}
+
+	.nav-site-host {
+		font-size: 0.75rem;
+		color: var(--content-meta);
+		opacity: 0.85;
+	}
+
+	.nav-site-empty {
+		text-align: center;
+		padding: 4rem 1rem;
+	}
+
+	.nav-site-empty-icon {
+		font-size: 3rem;
+		color: oklch(0.75 0.06 var(--hue));
+		margin-bottom: 1rem;
+	}
+
+	.nav-site-empty-text {
+		color: var(--content-meta);
+	}
+
+	@keyframes sitenavCardSlideIn {
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+</style>

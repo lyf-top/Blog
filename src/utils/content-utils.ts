@@ -1,7 +1,8 @@
 import { type CollectionEntry, getCollection } from "astro:content";
 import I18nKey from "@i18n/i18nKey";
 import { i18n } from "@i18n/translation";
-import { getCategoryUrl } from "@utils/url-utils";
+import { buildTagGraphData, type TagGraphData } from "@/utils/tag-graph-data";
+import { getCategoryUrl, getTagUrl } from "@utils/url-utils";
 
 // // Retrieve posts and sort them by publication date
 async function getRawSortedPosts() {
@@ -239,4 +240,28 @@ export async function getRelatedPosts(
 	}
 
 	return result;
+}
+
+/**
+ * 获取标签力导向图数据
+ * 返回节点（标签名、文章数、归档URL）和边（共现次数）
+ */
+export async function getTagGraphData(): Promise<TagGraphData> {
+	const allBlogPosts = await getCollection("posts", ({ data }) => {
+		return import.meta.env.PROD ? data.draft !== true : true;
+	});
+
+	const graph = buildTagGraphData(
+		allBlogPosts.map((post) => ({
+			tags: post.data.tags,
+		})),
+	);
+
+	return {
+		...graph,
+		nodes: graph.nodes.map((node) => ({
+			...node,
+			url: getTagUrl(node.name),
+		})),
+	};
 }

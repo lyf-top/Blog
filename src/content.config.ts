@@ -27,6 +27,19 @@ type PostData = {
 	nextSlug: string;
 };
 
+type DaohangData = {
+	name: string;
+	url: string;
+	icon: string;
+	description: string;
+	category: string;
+	tags: string[];
+	color: string;
+	image: string;
+	featured: boolean;
+	order: number;
+};
+
 type DynamicData = {
 	published: Date;
 	pinned: boolean;
@@ -82,11 +95,29 @@ const dynamicCollection: ContentCollection<DynamicData> = defineCollection({
 	}),
 });
 
+const daohangCollection = defineCollection({
+	loader: glob({ pattern: "**/*.md", base: "./src/content/daohang" }),
+	schema: z.object({
+		name: z.string(),
+		url: z.string(),
+		icon: z.string().optional().default(""),
+		description: z.string().optional().default(""),
+		category: z.string().default("未分类"),
+		tags: z.array(z.string()).optional().default([]),
+		color: z.string().optional().default(""),
+		image: z.string().optional().default(""),
+		featured: z.boolean().optional().default(false),
+		order: z.number().optional().default(0),
+	}),
+});
+
 export const collections: {
+	daohang: typeof daohangCollection;
 	dynamic: typeof dynamicCollection;
 	posts: typeof postsCollection;
 	spec: typeof specCollection;
 } = {
+	daohang: daohangCollection,
 	dynamic: dynamicCollection,
 	posts: postsCollection,
 	spec: specCollection,

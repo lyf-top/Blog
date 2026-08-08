@@ -15,6 +15,11 @@ enum I18nKey {
 	categories = "categories",
 	allCategories = "allCategories",
 	allTags = "allTags",
+
+	// 分类标签合一页
+	categoriesTagsPage = "categoriesTagsPage",
+	categoriesTagsSubtitle = "categoriesTagsSubtitle",
+
 	recentPosts = "recentPosts",
 	postList = "postList",
 	tableOfContents = "tableOfContents",
@@ -113,6 +118,12 @@ enum I18nKey {
 	booknavDescription = "booknavDescription",
 	searchBooknav = "searchBooknav",
 	booknavEmpty = "booknavEmpty",
+
+	// 网站导航
+	siteNavTitle = "siteNavTitle",
+	siteNavSubtitle = "siteNavSubtitle",
+	siteNavFilterAll = "siteNavFilterAll",
+	siteNavEmpty = "siteNavEmpty",
 
 	// 番组计划筛选和状态文本
 	bangumiTitle = "bangumiTitle",
@@ -381,6 +392,11 @@ enum I18nKey {
 	calendarDecember = "calendarDecember",
 	calendar = "calendar",
 	calendarHeatmapWeek = "calendarHeatmapWeek",
+
+	// 归档页热力图
+	postHeatmap = "postHeatmap",
+	githubHeatmap = "githubHeatmap",
+
 	advertisement = "advertisement",
 
 	shareArticle = "shareArticle",

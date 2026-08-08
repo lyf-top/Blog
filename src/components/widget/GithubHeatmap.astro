@@ -1,0 +1,73 @@
+---
+import I18nKey from "@i18n/i18nKey";
+import { i18n } from "@i18n/translation";
+
+const { username } = Astro.props;
+const title = i18n(I18nKey.githubHeatmap);
+
+// 构建时拉取 GitHub 贡献数据
+let gridData: number[][] = [];
+let errorMsg = "";
+
+try {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 5000);
+	const response = await fetch(
+		`https://github-contributions-api.jogruber.de/v4/${username}?y=last`,
+		{
+			headers: { "User-Agent": "Mozilla/5.0" },
+			signal: controller.signal,
+		},
+	);
+	clearTimeout(timeout);
+
+	if (response.ok) {
+		const data = await response.json();
+		// data.contributions: [{level:0-4}, ...] 按周排
+		const contributions: { level: number }[] = data.contributions || [];
+		// 转为 7 行（周日-周六）× 53 列的网格
+		const rows = 7;
+		const cols = 53;
+		gridData = Array.from({ length: rows }, () => Array(cols).fill(0));
+		for (let i = 0; i < Math.min(contributions.length, rows * cols); i++) {
+			const row = i % rows;
+			const col = Math.floor(i / rows);
+			gridData[row][col] = contributions[i]?.level || 0;
+		}
+	} else {
+		errorMsg = "GitHub API 请求失败";
+	}
+} catch (e) {
+	errorMsg = "GitHub 数据加载失败";
+}
+---
+
+<div class="heatmap-panel">
+	<div class="heatmap-title">
+		{title}
+		<a
+			href={`https://github.com/${username}`}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="heatmap-username"
+		>
+			@{username}
+		</a>
+	</div>
+	{errorMsg ? (
+		<div class="heatmap-error">{errorMsg}</div>
+	) : (
+		<div class="github-heatmap-grid">
+			{gridData.map((row, ri) => (
+				<div class="github-heatmap-row">
+					{row.map((level, ci) => (
+						<span
+							class={`github-cell level-${level}`}
+							title={`${ri}-${ci}: level ${level}`}
+						></span>
+					))}
+				</div>
+			))}
+		</div>
+	)}
+</div>

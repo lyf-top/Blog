@@ -101,6 +101,8 @@ export const siteConfig: SiteConfig = {
 
 	// 页面开关配置 - 控制特定页面的访问权限，设为false会返回404并自动隐藏对应的导航栏菜单项
 	pages: {
+		// 网站导航页面开关
+		siteNav: true,
 		// 友链页面开关
 		friends: true,
 		// 打赏页面开关
@@ -121,6 +123,14 @@ export const siteConfig: SiteConfig = {
 		timeline: true,
 		// 项目展示页面开关
 		projects: true,
+	},
+
+	// 归档页热力图（GitHub 贡献 + 文章发布分布）
+	heatmap: {
+		github: {
+			enabled: true,
+			username: "13292387557",
+		},
 	},
 
 	// 分类导航栏开关，在首页和归档页顶部显示分类快捷导航

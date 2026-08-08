@@ -1,0 +1,155 @@
+/* ==========================================================================
+   归档页热力图样式
+   ========================================================================== */
+
+.archive-heatmap {
+	container-type: inline-size;
+}
+
+.heatmap-container {
+	display: flex;
+	gap: 1.5rem;
+}
+
+.heatmap-panel {
+	flex: 1;
+	min-width: 0;
+	border: 1px solid var(--line-divider);
+	border-radius: var(--radius-large, 0.75rem);
+	padding: 1rem;
+	background: var(--card-bg);
+}
+
+.heatmap-title {
+	font-size: 0.875rem;
+	font-weight: 600;
+	color: var(--deep-text);
+	margin-bottom: 0.75rem;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.heatmap-username {
+	font-size: 0.75rem;
+	color: var(--primary);
+	text-decoration: none;
+}
+
+.heatmap-username:hover {
+	text-decoration: underline;
+}
+
+.heatmap-error {
+	font-size: 0.875rem;
+	color: var(--content-meta);
+	padding: 1rem 0;
+}
+
+/* ---- GitHub 热力图网格 ---- */
+.github-heatmap-grid {
+	display: flex;
+	gap: 2px;
+	overflow-x: auto;
+	padding-bottom: 0.25rem;
+}
+
+.github-heatmap-row {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.github-cell {
+	width: 10px;
+	height: 10px;
+	border-radius: 2px;
+	display: inline-block;
+	flex-shrink: 0;
+}
+
+/* GitHub 绿色系 */
+.github-cell.level-0 { background: var(--btn-regular-bg); }
+:root.dark .github-cell.level-0 { background: var(--btn-regular-bg); }
+
+.github-cell.level-1 { background: oklch(0.85 0.04 160); }
+.github-cell.level-2 { background: oklch(0.72 0.08 160); }
+.github-cell.level-3 { background: oklch(0.55 0.12 160); }
+.github-cell.level-4 { background: oklch(0.38 0.15 160); }
+
+/* ---- 文章热力图 ---- */
+.heatmap-year-btn {
+	padding: 0.25rem 0.75rem;
+	border: 1px solid var(--line-divider);
+	border-radius: 9999px;
+	font-size: 0.75rem;
+	font-weight: 500;
+	font-family: inherit;
+	background: var(--btn-regular-bg);
+	color: var(--btn-content);
+	cursor: pointer;
+	transition: background 200ms, color 200ms;
+}
+
+.heatmap-year-btn--active {
+	background: var(--primary);
+	color: #fff;
+	border-color: var(--primary);
+}
+
+.post-heatmap-grid {
+	overflow-x: auto;
+}
+
+.post-heatmap-months {
+	display: flex;
+	gap: 4px;
+}
+
+.post-heatmap-month {
+	display: flex;
+	flex-direction: column;
+}
+
+.post-heatmap-week-cells {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.post-cell {
+	width: 14px;
+	height: 14px;
+	border-radius: 3px;
+	display: inline-block;
+	flex-shrink: 0;
+}
+
+/* 文章热力图：主题主色相 */
+.post-cell.level-0 { background: var(--muted); }
+:root.dark .post-cell.level-0 { background: var(--btn-regular-bg); }
+
+.post-cell.level-1 { background: oklch(0.91 0.035 var(--hue)); }
+.post-cell.level-2 { background: oklch(0.82 0.08 var(--hue)); }
+.post-cell.level-3 { background: oklch(0.72 0.12 var(--hue)); }
+.post-cell.level-4 { background: oklch(0.62 0.14 var(--hue)); }
+
+.post-heatmap-labels {
+	display: flex;
+	margin-top: 0.375rem;
+}
+
+.post-heatmap-label {
+	width: calc(14px * 4 + 2px * 3); /* 4 cells + 3 gaps */
+	font-size: 0.625rem;
+	color: var(--content-meta);
+	text-align: center;
+	flex-shrink: 0;
+}
+
+/* 移动端：热力图纵向堆叠 */
+@media (max-width: 768px) {
+	.heatmap-container {
+		flex-direction: column;
+	}
+}

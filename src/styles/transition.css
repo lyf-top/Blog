@@ -91,7 +91,7 @@ html.is-animating .transition-swup-fade {
    -------------------------------------------------------------------------- */
 
 #progress-bar {
-    --progress-height: 3px;
+    --progress-height: 5px;
     --progress-duration: 8s;
 
     position: fixed;
@@ -128,4 +128,10 @@ html.is-animating .transition-swup-fade {
     width: 100%;
     opacity: 0;
     transition: opacity 300ms ease-out;
+}
+
+@media (min-width: 768px) {
+    #progress-bar {
+        --progress-height: 10px;
+    }
 }

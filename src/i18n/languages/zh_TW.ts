@@ -385,6 +385,13 @@ export const zh_TW: Translation = {
 	[Key.calendarHeatmapWeek]: "{month}月第{week}週，{count}篇文章",
 	[Key.advertisement]: "廣告",
 
+	// 分類標籤合一頁
+	[Key.categoriesTagsPage]: "分類標籤",
+	[Key.categoriesTagsSubtitle]: "可視化瀏覽文章分類與標籤",
+	// 歸檔頁熱力圖
+	[Key.postHeatmap]: "文章分布",
+	[Key.githubHeatmap]: "GitHub 貢獻",
+
 	[Key.shareArticle]: "分享",
 	[Key.generatingPoster]: "海報生成中...",
 	[Key.copied]: "已複製",
@@ -465,4 +472,10 @@ export const zh_TW: Translation = {
 		[Key.projectsVisit]: "前往",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "暫無匹配專案",
+
+	// 網站導航
+	[Key.siteNavTitle]: "網站導航",
+	[Key.siteNavSubtitle]: "收錄個人網站、常用工具和收藏網站",
+	[Key.siteNavFilterAll]: "全部",
+	[Key.siteNavEmpty]: "暫無收錄的網站",
 };

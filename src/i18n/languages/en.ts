@@ -393,6 +393,13 @@ export const en: Translation = {
 	[Key.calendarHeatmapWeek]: "Week {week} of {month}, {count} posts",
 	[Key.advertisement]: "Advertisement",
 
+	// Categories + Tags page
+	[Key.categoriesTagsPage]: "Categories & Tags",
+	[Key.categoriesTagsSubtitle]: "Visual overview of categories and tags",
+	// Archive heatmap
+	[Key.postHeatmap]: "Post Distribution",
+	[Key.githubHeatmap]: "GitHub Contributions",
+
 	[Key.shareArticle]: "Share",
 	[Key.generatingPoster]: "Generating Poster...",
 	[Key.copied]: "Copied",
@@ -475,4 +482,10 @@ export const en: Translation = {
 		[Key.projectsVisit]: "Visit",
 		[Key.projectsGitHub]: "GitHub",
 		[Key.projectsNoResults]: "No matching projects",
+
+	// Site Navigation
+	[Key.siteNavTitle]: "Site Navigation",
+	[Key.siteNavSubtitle]: "Personal sites, tools, and curated bookmarks",
+	[Key.siteNavFilterAll]: "All",
+	[Key.siteNavEmpty]: "No sites yet",
 };

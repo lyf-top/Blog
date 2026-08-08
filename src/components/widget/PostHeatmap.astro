@@ -1,0 +1,155 @@
+---
+import I18nKey from "@i18n/i18nKey";
+import { i18n } from "@i18n/translation";
+import type { PostForList } from "@/utils/content-utils";
+
+const { posts } = Astro.props as { posts: PostForList[] };
+const title = i18n(I18nKey.postHeatmap);
+
+interface MonthGrid {
+	year: number;
+	months: { month: number; weeks: { count: number }[] }[];
+}
+
+const grids: MonthGrid[] = [];
+const yearMap = new Map<number, Map<number, number>>();
+
+for (const post of posts) {
+	const d = new Date(post.data.published);
+	const year = d.getFullYear();
+	const month = d.getMonth();
+	const day = d.getDate();
+	const weekOfMonth = Math.min(Math.floor((day - 1) / 7), 3);
+
+	if (!yearMap.has(year)) yearMap.set(year, new Map());
+	const monthMap = yearMap.get(year)!;
+	const key = month * 10 + weekOfMonth;
+	monthMap.set(key, (monthMap.get(key) || 0) + 1);
+}
+
+const sortedYears = [...yearMap.keys()].sort((a, b) => b - a);
+for (const year of sortedYears) {
+	const monthMap = yearMap.get(year)!;
+	const months: MonthGrid["months"] = [];
+	for (let m = 0; m < 12; m++) {
+		const weeks: { count: number }[] = [];
+		for (let w = 0; w < 4; w++) {
+			const key = m * 10 + w;
+			weeks.push({ count: monthMap.get(key) || 0 });
+		}
+		months.push({ month: m, weeks });
+	}
+	grids.push({ year, months });
+}
+
+const monthLabels = [
+	"1月", "2月", "3月", "4月", "5月", "6月",
+	"7月", "8月", "9月", "10月", "11月", "12月",
+];
+
+function getLevel(count: number): number {
+	if (count === 0) return 0;
+	if (count <= 1) return 1;
+	if (count <= 3) return 2;
+	if (count <= 6) return 3;
+	return 4;
+}
+
+const currentYear = new Date().getFullYear();
+const initialYearIndex = grids.findIndex((g) => g.year === currentYear);
+const defaultGrid = initialYearIndex >= 0 ? grids[initialYearIndex] : grids[0];
+---
+
+<div class="heatmap-panel" id="post-heatmap-panel">
+	<div class="heatmap-title">{title}</div>
+	{grids.length === 0 ? (
+		<div class="heatmap-error">暂无文章数据</div>
+	) : (
+		<div>
+			{grids.length > 1 && (
+				<div class="heatmap-year-tabs flex flex-wrap gap-1 mb-2">
+					{grids.map((g) => (
+						<button
+							class={`heatmap-year-btn${g.year === (defaultGrid?.year || grids[0].year) ? " heatmap-year-btn--active" : ""}`}
+							data-post-year={String(g.year)}
+						>
+							{g.year}
+						</button>
+					))}
+				</div>
+			)}
+			{grids.map((g) => (
+				<div
+					class="post-heatmap-grid"
+					data-post-year-grid={String(g.year)}
+					style={`display:${g.year === (defaultGrid?.year || grids[0].year) ? "" : "none"}`}
+				>
+					<div class="post-heatmap-months">
+						{g.months.map((m) => (
+							<div class="post-heatmap-month">
+								<div class="post-heatmap-week-cells">
+									{m.weeks.map((w) => {
+										const level = getLevel(w.count);
+										return (
+											<span
+												class={`post-cell level-${level}`}
+												title={`${g.year}年${m.month + 1}月: ${w.count}篇`}
+											></span>
+										);
+									})}
+								</div>
+							</div>
+						))}
+					</div>
+					<div class="post-heatmap-labels">
+						{monthLabels.map((l) => (
+							<span class="post-heatmap-label">{l}</span>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	)}
+</div>
+
+<script is:inline>
+	(function () {
+		if (window.__fireflyPostHeatmapInit) return;
+		window.__fireflyPostHeatmapInit = true;
+
+		function init() {
+			var panel = document.getElementById("post-heatmap-panel");
+			if (!panel) return;
+
+			var yearBtns = panel.querySelectorAll("[data-post-year]");
+			var grids = panel.querySelectorAll("[data-post-year-grid]");
+
+			yearBtns.forEach(function (btn) {
+				btn.addEventListener("click", function () {
+					var year = btn.getAttribute("data-post-year");
+
+					yearBtns.forEach(function (b) {
+						b.classList.remove("heatmap-year-btn--active");
+					});
+					btn.classList.add("heatmap-year-btn--active");
+
+					grids.forEach(function (g) {
+						if (g.getAttribute("data-post-year-grid") === year) {
+							(g).style.display = "";
+						} else {
+							(g).style.display = "none";
+						}
+					});
+				});
+			});
+		}
+
+		if (document.readyState === "loading") {
+			document.addEventListener("DOMContentLoaded", init);
+		} else {
+			init();
+		}
+		document.addEventListener("astro:page-load", init);
+		document.addEventListener("swup:contentReplaced", init);
+	})();
+</script>

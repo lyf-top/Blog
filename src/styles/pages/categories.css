@@ -1,0 +1,116 @@
+/* ==========================================================================
+   分类标签合一页样式
+   ========================================================================== */
+
+/* 分类玫瑰图 */
+.category-rose {
+	margin-bottom: 2rem;
+}
+
+.category-rose__layout {
+	display: flex;
+	gap: 2rem;
+	align-items: center;
+}
+
+.category-rose__chart {
+	flex: 1;
+	height: 380px;
+	min-width: 0;
+}
+
+.category-rose__list {
+	width: 180px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	max-height: 380px;
+	overflow-y: auto;
+}
+
+.category-rose__list-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.375rem 0.625rem;
+	border-radius: 0.5rem;
+	text-decoration: none;
+	transition: background 200ms ease, color 200ms ease;
+	line-height: 1.4;
+}
+
+.category-rose__list-item:hover {
+	background: oklch(0.9 0.03 var(--hue));
+	color: var(--primary);
+}
+
+:root.dark .category-rose__list-item:hover {
+	background: oklch(0.3 0.04 var(--hue));
+}
+
+.category-rose__list-name {
+	font-size: 0.875rem;
+	font-weight: 500;
+	color: var(--deep-text);
+	transition: color 200ms ease;
+}
+
+.category-rose__list-item:hover .category-rose__list-name {
+	color: var(--primary);
+	font-size: 1.25rem;
+}
+
+.category-rose__list-count {
+	font-size: 0.75rem;
+	color: var(--content-meta);
+	flex-shrink: 0;
+}
+
+/* 分隔线 */
+.categories-page__divider {
+	height: 1px;
+	background: var(--line-divider);
+	margin: 2rem 0;
+}
+
+/* 标签关系图 */
+.tag-graph {
+	margin-bottom: 1rem;
+}
+
+.tag-graph__chart {
+	height: 620px;
+	border: 1px solid var(--line-divider);
+	border-radius: 0.5rem;
+	background: var(--card-bg);
+	overflow: hidden;
+}
+
+/* 移动端 */
+@media (max-width: 768px) {
+	.category-rose__layout {
+		flex-direction: column;
+	}
+
+	.category-rose__chart {
+		height: 300px;
+		width: 100%;
+	}
+
+	.category-rose__list {
+		width: 100%;
+		max-height: none;
+		flex-direction: row;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.category-rose__list-item {
+		flex: none;
+	}
+
+	.tag-graph__chart {
+		height: 420px;
+	}
+}

@@ -152,7 +152,7 @@ mysql
 | `docker load`    |     加载本地压缩文件到镜像     | docker load     |
 | `docker inspect` |        查看容器详细信息        | docker inspect  |
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783254465651_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783254465651_image.webp)
 
 ### Ngnix演示
 
@@ -244,7 +244,7 @@ MySQL、Nginx容器运行后，如果我要修改其中的某些配置该怎么�
 - 容器运行的Nginx所有的文件都在容器内部。所以**利用数据卷将两个目录与宿主机目录关联**，方便我们操作。
   
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783255462385_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783255462385_image.webp)
 
 - 我们创建了两个数据卷：conf、html
 
@@ -347,7 +347,7 @@ docker exec -it nginx bash
 
 ### Dockerfile
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783659729269_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783659729269_image.webp)
 
 |    指令    | 说明                                           | 示例                          |
 | :--------: | ---------------------------------------------- | ----------------------------- |
@@ -403,7 +403,7 @@ curl localhost:8080/hello/count
 
 ### 网络
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783660042987_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783660042987_image.webp)
 
 |            命令             | 说明                     |
 | :-------------------------: | ------------------------ |
@@ -473,7 +473,7 @@ PING mysql (172.18.0.2) 56(84) bytes of data.
 
 
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783660542919_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783660542919_image.webp)
 
 
 
@@ -532,7 +532,7 @@ docker logs -f tlias-server
 
 ### 部署前端
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783661402386_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783661402386_image.webp)
 
 - 将资 **资料/04. 项目部署/前端项目** 中的 目录`html`和 配置文件存放目录 **`conf`**，上传至服务器端的 **`/usr/local/tlias-web`**目录下。
 
@@ -548,7 +548,7 @@ nginx:1.20.2
 
 ## DockerCompose
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783661681738_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783661681738_image.webp)
 
 | docker run 参数 | docker compose 指令 | 说明       |
 | :-------------: | ------------------- | ---------- |

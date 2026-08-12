@@ -15,19 +15,19 @@ updated: 2026-07-04 21:43:03
 
 ## Linux概述
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783153820529_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783153820529_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783153890769_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783153890769_image.webp)
 
 ### 远程工具
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783154017481_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783154017481_image.webp)
 
 ## 目录结构
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783154157779_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783154157779_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783154160294_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783154160294_image.webp)
 
 ## Linux常用命令
 
@@ -328,7 +328,7 @@ yum install vim
   | **:set nonu**    | 取消行号显示                         |
   | **:n**           | 定位到第n行，如 :10 就是定位到第10行 |
 
-  ![image.webp](https://imgbed.f3f3.top/file/picgo/1783166069552_image.webp)
+  ![image.webp](https://img.f3f3.top/picgo/1783166069552_image.webp)
 
 ####  find
 
@@ -368,7 +368,7 @@ yum install vim
 
 ##  软件安装
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783166145547_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783166145547_image.webp)
 
 ### 安装JDK
 
@@ -376,7 +376,7 @@ yum install vim
 
 使用FinalShell自带的上传工具将jdk的二进制发布包上传到Linux
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783166766320_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783166766320_image.webp)
 
 由于上述在进行文件上传时，选择的上传目录 /root，上传完毕后，我们执行指令 cd /root 切换到根目录下，查看上传的安装包。
 
@@ -577,13 +577,13 @@ mysql -h192.168.200.128 -P3306 -uroot -p1234
 
 打开DataGrip图形化工具连接
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783168781441_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783168781441_image.webp)
 
 
 
 执行资料中提供的SQL脚本 `tlias.sql` 。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783168832875_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783168832875_image.webp)
 
 
 
@@ -654,7 +654,7 @@ ps -eflgrep nginx
 
 将nginx的安装目录的html中的静态资源文件先删除掉。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783169205973_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783169205973_image.webp)
 
 
 
@@ -664,7 +664,7 @@ ps -eflgrep nginx
 
 **修改资料中提供的 `nginx.conf` 配置文件，将其上传到nginx安装目录下的 conf 目录中.**
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783169236876_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783169236876_image.webp)
 
 
 
@@ -724,7 +724,7 @@ aliyun:
 
 执行 `package` 指令，进行打包操作，将当前的springboot项目，打成一个jar包。 (**跳过测试**)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783167226699_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783167226699_image.webp)
 
 在Linux服务器上创建一个目录，将jar包上传到服务器 。
 

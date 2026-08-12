@@ -185,7 +185,7 @@ POM (Project Object Model) ：指的是项目对象模型，用来描述当前�
 </project>
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781767313386_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781767313386_image.webp)
 
 
 
@@ -261,14 +261,14 @@ mvn install    # 安装到本地仓库
 
 工程之间的继承不支持多继承，但是支持多重继承
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1785245425184_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1785245425184_image.webp)
 
 ### 版本锁定
 
 - **通过dependencyManagement标签实现**
 - **可以在properties标签中直接设置依赖版本，在下面直接通过${依赖名.version}引用版本**
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1785245578518_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1785245578518_image.webp)
 
 - <dependencyManagement> 与 <dependencies>的区别是什么?
   <dependencies>是直接依赖，在父工程配置了依赖,子工程会直接继承下来。

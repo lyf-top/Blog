@@ -86,7 +86,7 @@ drop table  [if exists] 表名;
 truncate table 表名;
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781404826667_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781404826667_image.webp)
 
 ```
 create table emp()
@@ -302,15 +302,15 @@ ORDER BY salary DESC
 LIMIT 1;
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781409129012_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781409129012_image.webp)
 
 ## 约束
 
 ### 初识
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781411128058_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781411128058_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781411374924_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781411374924_image.webp)
 
 ### 非空约束
 

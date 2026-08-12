@@ -340,9 +340,9 @@ LLM的问题：
 
 #### 数据准备阶段
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1784437815123_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1784437815123_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1784437961368_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1784437961368_image.webp)
 
 **RAG 的过程：** 把问题转成语义向量；
 
@@ -365,7 +365,7 @@ LLM的问题：
 
 **注入Prompt**检索到的资料与用户问题一起交给大语言模型
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1784420729791_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1784420729791_image.webp)
 
 ##### **数据提取**
 
@@ -1447,7 +1447,7 @@ print(f"✅ 答案: {answer}")
 
 ### 混合检索
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1784369806943_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1784369806943_image.webp)
 
 传统RAG只用向量检索(语义匹配），对关键词精确匹配效果差。本系统采用语义检索+关键词检索双路召回+
 RRF 融合排序：

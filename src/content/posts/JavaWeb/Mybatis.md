@@ -25,7 +25,7 @@ updated: 2026-06-18 21:43:03
 
 ### 创建springboot工程
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781926165901_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781926165901_image.webp)
 
 ### 导入依赖
 

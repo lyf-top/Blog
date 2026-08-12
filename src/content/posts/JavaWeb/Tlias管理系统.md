@@ -32,7 +32,7 @@ updated: 2026-06-18 21:43:03
 
 - 学员管理（自己实战内容）
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781930618184_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781930618184_image.webp)
 
 **基于REST风格URL如下：**
 
@@ -47,7 +47,7 @@ updated: 2026-06-18 21:43:03
 
 创建SpringBoot工程并引入web开发起步依赖、mybatis、mysql驱动、lombok
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781931767293_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781931767293_image.webp)
 
 ```
 spring:
@@ -108,7 +108,7 @@ public class Result {
 }
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781934894097_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781934894097_image.webp)
 
 ### 部门表查询
 
@@ -170,7 +170,7 @@ public class Dept {
 }
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781932502244_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781932502244_image.webp)
 
 - Controller层，负责接收前端发起的请求，并调用service查询部门数据，然后响应结果。
 
@@ -180,14 +180,14 @@ public class Dept {
 
 #### mybatis属性封装
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781934894097_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781934894097_image.webp)
 
 部门的数据中，id、name两个属性是有值的，但是createTime、updateTime两个字段值并未成功封装，而数据库中是有对应的字段值的，这是为什么呢？
 
 - 实体类属性名和数据库表查询返回的字段名一致，mybatis会自动封装。
 - 如果实体类属性名和数据库表查询返回的字段名不一致，不能自动封装。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781934178351_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781934178351_image.webp)
 
 ##### 手动映射
 
@@ -291,7 +291,7 @@ public interface DeptMapper {
 
 #### 前后端联调
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781935470226_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781935470226_image.webp)
 
 1.浏览器发起请求，请求的是localhost:90 ，那其实请求的是nginx服务器。
 
@@ -529,7 +529,7 @@ public interface DeptService {
 
 #### 修改部门
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781938770333_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781938770333_image.webp)
 
 ##### @RequestBody
 
@@ -988,7 +988,7 @@ public class Emp {
 
 ### 分页查询
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781941764600_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781941764600_image.webp)
 
 ```
 package com.itheima.pojo;
@@ -1023,7 +1023,7 @@ public class PageResult< T> {
 
 
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781942268802_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781942268802_image.webp)
 
 #### 引入依赖
 
@@ -1152,7 +1152,7 @@ PageHelper在进行分页查询时，会执行上述两条SQL语句，并将查�
 1.3选择入职时间的开始时间和结束时间，可以进行范围查询。
 1.4 对查询结果根据修改时间倒序排序，并对查询结果进行分页展示。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782004261118_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782004261118_image.webp)
 
 #### 初始
 
@@ -1163,7 +1163,7 @@ public Result list(@RequestParam(defaultValue = "1")Integer page, @RequestParam(
 @DataTimeFormat(pattern = "yyyy-MM-dd"） LocalDate begin,@DataTimeFormat(pattern = "yyyy-MM-dd")LocalDate end） {
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782005176618_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782005176618_image.webp)
 
 sql语句太长要用xml文件映射，在resouces创建目录名同包名创建xml文件 在mybatis中文网找映射代码cv
 
@@ -1301,7 +1301,7 @@ public class PageResult< T> {
 
 #### 新增字段
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782008591945_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782008591945_image.webp)
 
 ```
 //员工基本信息表
@@ -1592,7 +1592,7 @@ public class AliyunOSSOperator {
 
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782015136291_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782015136291_image.webp)
 
 
 
@@ -1695,7 +1695,7 @@ private String region;
 
 #### 回显数据
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782016739902_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782016739902_image.webp)
 
 ##### Controller
 
@@ -1940,7 +1940,7 @@ public class PhoneRepeatException extends RuntimeException {
 
 ### 返回实体类
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782020262645_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782020262645_image.webp)
 
 ```
 package com.itheima.pojo;
@@ -2096,7 +2096,7 @@ if null函数语法：`ifnull(expr, val1)`    如果expr不为null，取自身�
 
 ### 前置数据
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782021361441_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782021361441_image.webp)
 
 ```
 package com.itheima.pojo;
@@ -2444,7 +2444,7 @@ public class TokenFilter implements Filter {
 }
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782909316905_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782909316905_image.webp)
 
 ### 拦截器
 
@@ -2552,9 +2552,9 @@ public class WebConfig implements WebMvcConfigurer {
 }
 ```
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782912807995_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782912807995_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782912355672_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782912355672_image.webp)
 
 ## SpringAop
 
@@ -2589,7 +2589,7 @@ AOP 是面向切面编程，适合把一些和业务逻辑无关、但很多方�
 
 `execution(...)`：指定哪些方法需要被增强
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782914432999_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782914432999_image.webp)
 
 ### 通知
 
@@ -2624,7 +2624,7 @@ public class RecordTimeAspect {
 
 #### 通知类型
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1782915586026_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1782915586026_image.webp)
 
 
 
@@ -2761,7 +2761,7 @@ public Object recordTime(ProceedingJoinPoint joinPoint) throws Throwable {
 
 ## 操作日志
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783663956439_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783663956439_image.webp)
 
 ### 实体类
 
@@ -2887,9 +2887,9 @@ public class OperationLogAspect {
 
 ### TreadLocal
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783666951626_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783666951626_image.webp)
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783667072333_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783667072333_image.webp)
 
 ### 工具类
 
@@ -3009,7 +3009,7 @@ yaml、yml 两种配置文件，优先级最高的是yml。
    ```
    
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783669041851_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783669041851_image.webp)
 
 **打包上线**
 
@@ -3073,7 +3073,7 @@ public class OSSConfig {
 
 ### 起步依赖
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1783670281745_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1783670281745_image.webp)
 
 起步依赖的原理就是Maven的依赖传递。
 

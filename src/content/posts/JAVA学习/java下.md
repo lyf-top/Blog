@@ -2552,7 +2552,7 @@ String joinCity = userList.stream().map(User::getCity).collect(Collectors.joinin
 
 ### IO流概述
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781158347748_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781158347748_image.webp)
 
 <details>
 <summary style="cursor:pointer; font-weight:bold; color:var(--primary);">初识IO流</summary>
@@ -3344,7 +3344,7 @@ public class BufferedStreamDemo04 {
 <details>
 <summary style="cursor:pointer; font-weight:bold; color:var(--primary);">问题1 </summary>
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781312930404_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781312930404_image.webp)
 
 分析：
 
@@ -3480,7 +3480,7 @@ Java API提供了两个转换流：
 
 很多时候我们使用转换流来处理文件乱码问题。实现编码和解码的功能。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781313897432_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781313897432_image.webp)
 
 </details>
 
@@ -3800,7 +3800,7 @@ class Window implements Runnable {
 
 </details>
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1781319557060_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1781319557060_image.webp)
 
 ```
 1. 新建状态

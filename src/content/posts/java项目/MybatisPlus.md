@@ -173,7 +173,7 @@ public class MyMetaObjectHandler implements MetaObjectHandler {
 
 ## 条件构造器
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786272682937_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786272682937_image.webp)
 
 | 层级        | 核心角色                   |                           核心作用                           |
 | ----------- | -------------------------- | :----------------------------------------------------------: |
@@ -250,7 +250,7 @@ Long count = userMapper.selectCount(queryWrapper);
 
 ### 自定义sql
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786274629124_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786274629124_image.webp)
 
 1. **取消使用BaseMapper中现成的API，自定义SQL方法，条件在业务层作为参数传入**
 1. **Wrapper变量名称前必须用@Param("ew")声明，**
@@ -769,7 +769,7 @@ public class DbToolDemo {
 
 MP 的逻辑删除本质是**拦截删除操作，将 `DELETE` 语句转为 `UPDATE` 语句**，同时拦截查询操作，自动添加逻辑删除字段的过滤条件（只查未删除数据）。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786278024165_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786278024165_image.webp)
 
 ### 添加字段
 

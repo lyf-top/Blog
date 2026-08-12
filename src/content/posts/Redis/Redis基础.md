@@ -19,7 +19,7 @@ updated: 2026-08-10 10:43:08
 
 **NoSql**为**非关系型数据库**。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786319324054_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786319324054_image.webp)
 
 ## 命令
 
@@ -86,11 +86,11 @@ APPEND key value // 将指定的value追加到该key原来值value的末尾
 - **Hash类型，也叫散列，其value是一个无序字典，类似于Java中的HashMap结构。**
 - **String结构是将对象序列化为JSON字符串后存储，当需要修改对象某个字段时很不方便**
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786322594961_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786322594961_image.webp)
 
 **Hash结构可以将对象中的每个字段独立存储，可以针对单个字段做CRUD**
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786322629480_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786322629480_image.webp)
 
 ```
 HSET key field value：添加或者修改hash类型key的field的值
@@ -118,7 +118,7 @@ HSETNX：添加一个hash类型的key的field值，前提是这个field不存在
 
 Redis中的List类型与Java中的LinkedList类似，可以看做是一个双向链表结构。既可以支持正向检索和也可以支持反向检索。
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786323979228_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786323979228_image.webp)
 
 - **有序**
 - **元素可以重复**
@@ -271,7 +271,7 @@ public class JedisConnectionFacotry {
 
 ### **Template**
 
-![image.webp](https://imgbed.f3f3.top/file/picgo/1786325893036_image.webp)
+![image.webp](https://img.f3f3.top/picgo/1786325893036_image.webp)
 
 ```
  @Autowired

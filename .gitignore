@@ -46,3 +46,6 @@ package/
 md_backup.zip
 replace_imgbed.py
 backup_bak.py
+
+# python
+__pycache__/

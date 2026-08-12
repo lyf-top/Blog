@@ -2,7 +2,7 @@
 
 title: MySql基础
 description: 🥧MySql学习之路开启
-image: 'https://img.f3f3.top/img/2026/05/30/da45596576f04825512ee17c4ebb77c6.webp' #文章封面页
+image: 'https://img.f3f3.top/img/1786553466089_image.webp' 
 tags:
   - Mysql基础
 category: MySql数据库 

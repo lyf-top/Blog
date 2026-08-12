@@ -1,7 +1,7 @@
 ---
 title: Spring配置文件
 description: Spring学习之路开启
-image: 'https://img.f3f3.top/img/2026/05/30/da45596576f04825512ee17c4ebb77c6.webp' #文章封面页
+image: 'https://img.f3f3.top/img/1786553105259_image.webp' 
 tags:
   - Spring配置文件
 category:  JavaWeb

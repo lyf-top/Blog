@@ -2,7 +2,7 @@
 
 title: python大模型
 description: 🥧python学习之路开启
-image: 'https://img.f3f3.top/img/2026/04/28/87ab7f6d31b8b767723c61db968f171c.webp'#文章封面页
+image: 'https://img.f3f3.top/img/1786552864962_image.webp'#文章封面
 tags:
   - python基础
 category: Agent 

@@ -2,7 +2,7 @@
 
 title: Agent开发
 description: 🥧Agent学习之路开启
-image: 'https://img.f3f3.top/img/2026/04/28/87ab7f6d31b8b767723c61db968f171c.webp'#文章封面页
+image: 'https://img.f3f3.top/img/1786551490276_image.webp'#文章封面页
 tags:
   - Agent所有知识
 category: Agent 

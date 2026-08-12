@@ -1,7 +1,7 @@
 ---
 title: Ioc与DI
 description: Ioc容器学习之路开启
-image: 'https://img.f3f3.top/img/2026/05/30/da45596576f04825512ee17c4ebb77c6.webp' #文章封面页
+image: 'https://img.f3f3.top/img/1786553056096_image.webp' 
 tags:
   - Ioc容器初识
 category:  JavaWeb

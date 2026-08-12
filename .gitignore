@@ -41,3 +41,8 @@ package/
 .codex*
 .claude
 .mimocode
+
+# 图片批量处理临时产物（脚本与备份包，不入库）
+md_backup.zip
+replace_imgbed.py
+backup_bak.py

@@ -25,7 +25,7 @@ updated: 2026-07-20 10:43:03
 
 ## LLM
 
-TransFormer=同时看所有词+同时计算词与词之间的关系+多层深入理解
+**TransFormer=同时看所有词+同时计算词与词之间的关系+多层深入理解**
 
 ### Prompt Engineering
 
@@ -51,7 +51,99 @@ TransFormer=同时看所有词+同时计算词与词之间的关系+多层深入
 }
 ```
 
-## LangChain
+## OpenAi规范
+
+```
+import os
+from openai import OpenAI
+
+try:
+    client = OpenAI(
+        # 替换成你自己的ak
+        api_key="<your key>",
+        #写进client里和baseurl模型服务器地址
+        #可以通header传递，key为Authorization Bearer+apikey
+        
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+
+    completion = client.chat.completions.create(
+        
+        model="qwen-plus",
+        #Array[]
+        messages=[
+        #系统提示词
+            {"role": "system", "content": "You are a helpful assistant."},
+            #用户提示词
+            {"role": "user", "content": "你是谁？"},
+        ],
+    )
+    temperature=0.3,  # 降低随机性，提高准确性
+    #temperature越大越不严谨
+   
+   #限制
+    max_tokens=500
+    
+    #stream流式输出
+    "stream"=false #流式输出，true流式输出
+     
+    print(completion.choices[0].message.content)
+except Exception as e:
+    print(f"错误信息：{e}")
+```
+
+| 字段      |           非流式输出            | 流式输出                      | 说明                                                         |
+| --------- | :-----------------------------: | ----------------------------- | ------------------------------------------------------------ |
+| `id`      |              `id`               | `id`                          | API 请求返回的唯一标识。流式输出中，每个 chunk 的 `id` 通常相同。 |
+| `choices` |            `choices`            | `choices`                     | 候选结果列表。非流式中每一项通常包含 `message`；流式中每一项通常包含 `delta`。 |
+| 文本内容  |  `choices[i].message.content`   | `choices[i].delta.content`    | 非流式返回模型生成的完整文本；流式返回当前 chunk 的增量文本，需要按顺序拼接。注意：`choices[i].message.content` 只用于非流式输出，流式输出对应的是 `choices[i].delta.content`，不是 `message.content`。 |
+| 工具调用  | `choices[i].message.tool_calls` | `choices[i].delta.tool_calls` | 非流式返回完整的工具调用信息；流式返回增量的工具调用信息，函数名和参数可能分多次返回，需要累积拼接。 |
+
+## 框架选型
+
+### spring
+
+通过https://start.spring.io/快速创建
+
+![image.webp](https://img.f3f3.top/picgo/1787222297409_image.webp)
+
+```
+<packaging>pom</packaging>
+<modules>
+    <module>demo-common</module>
+    <module>demo-service</module>
+    <module>demo-web</module>
+</modules>
+//分模块设计
+```
+
+```
+<parent>
+    <groupId>com.example</groupId>
+    <artifactId>demo-parent</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+</parent>
+```
+
+| 能力            | LangChain4j         | Spring AI        | Spring AI Alibaba              |
+| --------------- | ------------------- | ---------------- | ------------------------------ |
+| 是否依赖 Spring | ❌ 可独立使用        | ✔️ 深度集成       | ✔️ 深度集成                     |
+| Prompt 模板     | ✔️ Mustache 风格     | ✔️ 类似 Thymeleaf | ✔️ 继承 Spring AI               |
+| 结构化输出      | ✔️ 强（JSON Schema） | ✔️ 基础支持       | ✔️ 增强版                       |
+| RAG 支持        | ✔️ 全链路            | ✔️ 基础           | ✔️ 企业级增强                   |
+| 智能体（Agent） | ✔️ 内置 ReAct 等     | ❌ 需手动实现     | ✔️ Graph + Multi-Agent          |
+| 工作流编排      | ⚠️ 简单 Chain        | ❌ 无             | ✔️ Graph 引擎（核心优势）       |
+| 阿里云集成      | ✔️ Qwen / DashScope  | ❌ 无官方支持     | ✔️ 深度集成（百炼、OSS、Nacos） |
+| 生产可观测性    | ⚠️ 需自行集成        | ✔️ Micrometer     | ✔️ ARMS / SLS 原生              |
+
+- **非 Spring 的纯Java项目项目**→ 选 **LangChain4j**
+- **需要快速原型验证**，且熟悉 LangChain 概念 → 选 **LangChain4j**
+- **已有 Spring Boot 项目，只需简单 LLM 调用或 RAG** → 选 **Spring AI**
+- **构建企业级、多步骤、多角色协作的 AI 应用** → 选 **Spring AI Alibaba**
+- **想用 Java 但又想要接近 Python LangChain 的体验** → **LangChain4j 是最佳选择**
+
+### LangChain
 
 构建翻译系统
 
@@ -119,7 +211,11 @@ if __name__ == "__main__":
 
 ```
 
-Prompt Template（提示模板）
+```
+uv run main.py
+```
+
+**Prompt Template（提示模板）**
 
 ```
 from langchain_core.prompts import ChatPromptTemplate
@@ -130,7 +226,7 @@ Plain Text
 - 支持系统消息（system）和用户消息（user）的组合，是 LangChain 中用于构造 LLM 输入的标准方式。
 - 利用了 **模板变量**（如 `{language}` 和 `{text}`），实现动态内容注入。
 
-LLM 集成（通过 OpenAI 兼容接口）
+**LLM 集成（通过 OpenAI 兼容接口）**
 
 ```
 from langchain_openai import ChatOpenAI
@@ -168,38 +264,352 @@ from langserve import add_routes
 - `add_routes(app, chain, path="/chain")` 自动为你的 chain 生成 RESTful API（包括 `/chain/invoke`, `/chain/stream` 等端点）。
 - 基于 FastAPI，支持异步、OpenAPI 文档、自动请求/响应验证。
 
-
-
 ## SpringAI
 
 ### 接入配置
 
+**父依赖**
+
 ```
-<dependencyManagement>
+<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+//指定springBoot版本
+		<version>4.1.0</version>
+		<relativePath/> <!-- lookup parent from repository -->
+	</parent>
+	<groupId>com.example</groupId>
+	<artifactId>demo</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+	<name/>
+	<description/>
+	<url/>
+
+	<modules>
+		<module>mcp/sringai</module>
+	</modules>
+
+	<properties>
+		<java.version>17</java.version>
+		<spring.ai.alibaba.version>1.1.0.0</spring.ai.alibaba.version>
+	</properties>
+
+
+	<dependencyManagement>
 		<dependencies>
 			<dependency>
 				<groupId>com.alibaba.cloud.ai</groupId>
 				<artifactId>spring-ai-alibaba-bom</artifactId>
-				<version>1.1.0.0</version>
+				<version>${spring.ai.alibaba.version}</version>
 				<type>pom</type>
 				<scope>import</scope>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
+```
 
- <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
-            <version>1.1.0.0</version>
- </dependency>
+**子依赖**
 
 ```
+  <parent>
+        <groupId>com.example</groupId>
+        <artifactId>demo</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <groupId>com.example</groupId>
+    <artifactId>sringai</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>      <spring.ai.alibaba.version>1.1.0.0</spring.ai.alibaba.version>
+    </properties>
+ 
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    //子模块添加
+    <dependency>
+        <groupId>com.alibaba.cloud.ai</groupId>
+        <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+        <version>${spring.ai.alibaba.version}</version>
+    </dependency>
+</dependencies>
+```
+
+- **properties中spring.ai.alibaba.version的版本号**
+- **<version>${spring.ai.alibaba.version}</version>**
 
 ```
 spring:
   ai:
     dashscope:
       api-key: sk-ws-H.EHMYHYX.VeUc.MEUCIQDyLgMI5VSHAOyUHnbblT4muC2q2DhOXkCPY9OY_a9GCAIga6OiX6wD-bOZtgzy4iGErxOZiP4E_QPbJtUcEPGYYr4
+```
+
+### 概念
+
+#### ChatModel
+
+- **ChatModel就是专门和对话模型对接的一套接口。**
+- **定义了与支持对话功能的语言模型交互的统一方式**
+- **ChatModel接口继承了两个接口**
+- **一个是Model、一个是StreamingChatModel。**
+- **DashScopeChatModel，这是一个具体的ChatModel的实现**
+
+**call方法**
+
+```
+@RestController
+@RequestMapping("/model")
+public class ChatModelController {
+
+    @Autowired
+    private DashScopeChatModel dashScopeChatModel;
+
+    @RequestMapping("/call/string")
+    public String callString(String message) {
+        return dashScopeChatModel.call(message);
+    }
+```
+
+**stream方法**
+
+```
+    @RequestMapping("/stream/string")
+    public Flux<String> callStreamString(String message, HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+        //防止变成乱码
+        return dashScopeChatModel.stream(message);
+    }
+```
+
+- **callString方法返回值是个Stream**
+- **callStreamString返回值是个Flux<String>**
+- **不管是call方法，还是stream，入参都是Prompt**
+
+**Message**
+
+- **系统设定（`SYSTEM`）**
+- **用户输入（`USER`）**
+- **模型回复（`ASSISTANT`）**
+- **工具返回结果（`ToolResponse`）**
+
+**ChatOptions**
+
+- **模型名称**
+- **温度（temperature）**
+- **最大生成 token 数量**
+- **Top-k、Top-p 采样策略**
+- **其他厂商特有的参数（比如 OpenAI 的 `stop`、`frequency_penalty` 等）**
+
+```
+DashScopeChatOptions.builder().withModel("qwen-plus").build()
+```
+
+**ChatResponse**
+
+**不管是call方法，还是stream，出参都是ChatResponse，只不过一个是Flux<ChatResponse>**
+
+```
+resp.getResult().getOutput().getText()
+```
+
+#### ChatClient
+
+**基础功能**
+
+- **定制和组装模型的输入（Prompt）**
+- **格式化解析模型的输出（Structured Output）**
+- **调整模型交互参数（ChatOptions）**
+
+**高级功能**
+
+- **聊天记忆（Chat Memory）**
+- **工具/函数调用（Function Calling）**
+- **RAG**
+
+##### 初始化
+
+```
+@RestController
+@RequestMapping("/client")
+//对chatclient进行初始化
+public class ChatClientController implements InitializingBean {
+
+    @Autowired
+    private ChatModel dashScopeChatModel;
+    private ChatClient chatClient;
+ @Override
+    public void afterPropertiesSet() throws Exception {
+        chatClient = ChatClient.builder(dashScopeChatModel)
+                // 实现 Logger 的 Advisor
+                .defaultAdvisors(
+                        new SimpleLoggerAdvisor()
+                )
+                .defaultSystem("请用英文回答问题")
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(DashScopeChatOptions.builder()
+                                .temperature(0.7)
+                                .build()
+                )
+                .build();
+    }
+}   
+```
+
+
+
+##### Defult
+
+**ChatClient在初始化的时候，可以指定很多defalut的配置**
+
+![image.webp](https://img.f3f3.top/picgo/1787293237357_image.webp)
+
+**如果重新指定了system，那么defaultSystem就会被覆盖。**
+
+```
+ @GetMapping("/recover")
+    public Flux<String> recover(String message, HttpServletResponse response){
+        response.setCharacterEncoding("UTF-8");
+        return chatClient.prompt(message).system("请用中文回答").stream().content();
+    }
+```
+
+**如果是在 Prompt 中设置的 SystemMessage，则会追加，而不是覆盖**(**记忆)**
+
+```
+//追加关系（记忆）
+    @GetMapping("/plus")
+    public Flux<String> plus(String message,HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+        List<Message> messages = List.of(
+                new SystemMessage("8加7等于多少"),
+                new UserMessage("message")
+        );
+        return chatClient.prompt(new Prompt(messages)).stream().content();
+    }
+```
+
+##### Tools
+
+**模型需要会用工具才能帮我实现很多功能**
+
+![image.webp](https://img.f3f3.top/picgo/1787296949594_image.webp)
+
+##### Advisors
+
+Advisors 是一组拦截器或“切面”，用于在调用前后对 Prompt 或 Response 进行拦截、修改、增强或记录。
+
+类似于 Spring AOP 的 Advisor，但用于 AI 请求/响应的处理链路。）
+
+RAG、记忆等等功能，都需要借助Advisor来实现
+
+### 提示词工程
+
+#### 角色设定
+
+**利用defaultSystem指定**
+
+```
+@RestController
+@RequestMapping("/promt/engineer")
+public class PromtEngineerController implements InitializingBean {
+    @Autowired
+    private ChatModel chatModel;
+    private ChatClient chatClient;
+@GetMapping("/role")
+public String role(String message) {
+    return chatClient.prompt(message).call().content();
+
+}
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        chatClient=ChatClient.builder(chatModel)
+                .defaultSystem("你是一个毒舌博主，说话很噎人，请根据用户问题，怼他")
+                .build();
+    }
+}
+```
+
+#### few-shot
+
+**覆盖系统提示词**
+
+```
+ @GetMapping("/shot")
+    public String shot(String message) {
+        return chatClient.prompt().system("""
+                请你根据用户输入的问题做改写，主要有以下改写策略：
+                1、改写其中的错别字。
+                2、做内容精简，帮用户的一堆废话精简成简单的一句话
+                可以参考以下实例：
+                
+                Input：ni好
+                Output ：{"错别字改写":"你好","内容精简":""}
+                
+                Input：我今天心情不错，我想知道今天是什么天气才让我心情这么好的？
+                Output ：{"错别字改写":"","内容精简":"今天是什么天气？"}
+                                
+                """).user(message).call().content();
+    }
+
+```
+
+#### 指定输出格式
+
+**修改prompt提示词**
+
+```
+@GetMapping("/promptsEngineer3")
+public Flux<String> chat3(@RequestParam(value = "message") String message, HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
+
+    return chatClient.prompt("请生成包括书名、作者和类别的三本虚构的、非真实存在的中文书籍清单，并以 JSON 格式提供，其中包含以下键:book_id、title、author、genre。").system("你是一个富有创意的作家").user(message).stream().content();
+}
+
+```
+
+#### 指定步骤
+
+```
+@GetMapping("/chat4")
+public Flux<String> chat4(@RequestParam(value = "message") String message, HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
+
+    return chatClient.prompt("""
+                执行以下操作：
+                  step1-用一句话概括下面文本。
+                  step 2-将摘要翻译成英语。
+                  step 3-在英语摘要中列出每个人名。
+                  step 4-输出一个 JSON 对象，其中包含以下键：english_summary，num_names。
+            
+                    请用换行符分隔您的答案。
+            """).system("你是个ai").user(message).stream().content();
+}
+```
+
+
+
+#### 思维链
+
+```
+@GetMapping("/chat5")
+public Flux<String> chat5(@RequestParam(value = "message") String message, HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
+
+    return chatClient.prompt("""
+                一个水果摊有5箱苹果，每箱重15公斤。今天卖掉了35公斤，还剩下多少公斤苹果？
+            
+                                请一步一步思考，并给出最终答案。
+            """).system("你是个ai").user(message).stream().content();
+}
 ```
 
 ### 流式输出
@@ -219,7 +629,7 @@ public class SseEmitterController {
     @GetMapping("/sse/emitter")
     public SseEmitter sse() {
         SseEmitter emitter = new SseEmitter(60_000L); // 设置超时时间
-
+      //创建虚拟线程
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
                 for (int i = 0; i < 10; i++) {
@@ -280,11 +690,28 @@ Spring WebFlux 是一种响应式web框架，使用 WebClient 和 Netty 等非�
 @GetMapping(value = "/sse/flux")
 public Flux<String> fluxStream() {
     return Flux.interval(Duration.ofSeconds(1))//相隔时间
-    
+    		.take(100)
             .map(seq -> "Stream element - " + seq);
+           
 }
 ```
 
+- **只保留前 n 个元素 —— 第 100 个（Message 99）之后的就丢弃不发了。**
+- **满 n 个后发出完成信号（onComplete）—— 告诉下游"流结束了"，SSE 连接也随之关闭。**
+- **自动取消上游订阅 —— Flux.interval 本质是个无限流，如果不用 take(100)，它会永远每秒发一条、永不停止。**
+- **take 会在取满后自动取消 interval 的定时器，释放线程/定时器资源**
+- **.map 是 Reactor 里的映射/转换操作符**
+- **：把流里的每一个元素，一对一地转换成另一个元素。**
+
+
+
+
+
+
+
+
+
+### 提示词模板
 
 
 
@@ -296,6 +723,7 @@ public Flux<String> fluxStream() {
 
 
 
+### 结构化输出
 
 
 
@@ -305,9 +733,31 @@ public Flux<String> fluxStream() {
 
 
 
+### 对话记忆
 
 
 
+
+
+
+
+### 持久化记忆
+
+
+
+
+
+
+
+### Advisor
+
+
+
+
+
+
+
+## LangChain4j
 
 
 
@@ -319,26 +769,44 @@ public Flux<String> fluxStream() {
 
 
 
+## MCP
+
+本质：
+
+让Agent能接外部世界,**协议**就能实现一些api调用
+
+比如：
+
+- 查天气
+- 调交易系统
+- 调音乐生成服务
+
+
+
+
+
+
+
 ## RAG
 
 ### RAG出现原由
 
 **让agent拥有你想要的知识**
 
-LLM的问题：
+**LLM的问题**：
 
-- 不知道你私有数据
+- **不知道你私有数据**
 
-- 容易幻觉
+- **容易幻觉**
 
-- 无法实时更新
+- **无法实时更新**
 
-- LLM的知识停留在训练时刻，无法回答私有领域问题。RAG通过检索外部知识库为LLM补充实时、精准的上下
-  文，使其回答有据可依。
+- **LLM的知识停留在训练时刻，无法回答私有领域问题。RAG通过检索外部知识库为LLM补充实时、精准的上下**
+  **文，使其回答有据可依。**
 
 ### RAG流程
 
-#### 数据准备阶段
+### 数据准备阶段
 
 ![image.webp](https://img.f3f3.top/picgo/1784437815123_image.webp)
 
@@ -367,7 +835,7 @@ LLM的问题：
 
 ![image.webp](https://img.f3f3.top/picgo/1784420729791_image.webp)
 
-##### **数据提取**
+#### **数据提取**
 
 - 数据提取
 
@@ -392,7 +860,9 @@ def preprocess_document(doc):
     return text
 ```
 
-##### **文本分割（Chunking）**
+#### **文本分割**
+
+**Chunking**
 
 是把长文档切成多个较小文本块，方便后续进行向量化、检索和生成答案。
 
@@ -485,9 +955,9 @@ for i in range(0, len(text), chunk_size - overlap):
 
 - **效果**：检索极其精准，同时 LLM 获得的上下文非常丰富。
 
-用户问题
-   ↓
-检索小切片
+用户问题****
+   **↓**
+**检索小切片**
    ↓
 找到最匹配的子切片
    ↓
@@ -497,7 +967,9 @@ for i in range(0, len(text), chunk_size - overlap):
 
 </details>
 
-##### **向量化（embedding）**
+#### **向量化**
+
+**embedding**
 
 向量化是一个将文本数据转化为向量矩阵（一串数字）的过程，该过程会直接影响到后续检索的效果。
 
@@ -582,7 +1054,7 @@ https://huggingface.co/BAAI/bge-base-en-v1.5
   - 理由：老牌稳定，特定领域可能更准，部署更轻量。
 - 不要选：早期的 `text2vec` 系列（过时了），或者 OpenAI 的 `text-embedding-ada-002`（性价比低，效果一般）。
 
-##### 数据入库
+#### 数据入库
 
 **为什么不用普通数据库？**
 
@@ -653,9 +1125,9 @@ print(f"成功索引了 {len(chunks)} 个文本块！")
 
 1. **Weaviate**（支持混合搜索）
 
-#### 应用阶段
+### 应用阶段
 
-##### 数据检索
+#### 数据检索
 
 常见的数据检索方法包括：相似性检索、全文检索等，根据检索效果，一般可以选择多种检索方式融合，提升召回率。
 
@@ -776,19 +1248,22 @@ ranked_docs = [doc for _, doc in sorted(zip(scores, candidate_docs), reverse=Tru
 | MRR         | 第一个相关文档的排名倒数      | 1 / 第一个相关文档的排名          | 越高越好 |
 | NDCG        | 考虑排序质量的综合指标        | 复杂公式                          | 越高越好 |
 
-##### 提示词工程
+#### 提示词工程
 
-在 RAG 场景下，提示词工程的目标只有一个：**强迫 LLM“忘记”它自带的训练知识，完全依赖你喂给它的“上下文”来回答问题（Grounding）。**
+在 RAG 场景下，提示词工程的目标只**有一个：强迫 LLM“忘记”它自带的训练知识，完全依赖你喂给它的“上下文”来回答问题（Grounding）。**
 
-标准 RAG 提示词架构：
+**标准 RAG 提示词架构：**
 
-一个优秀的 RAG Prompt 通常包含以下 4 个部分，顺序很重要：
+**一个优秀的 RAG Prompt 通常包含以下 4 个部分，顺序很重要：**
 
-1. **角色设定（Role）**：告诉 LLM 它是谁（专业的知识库助手）。
-1. **任务指令（Instruction）**：核心规则（比如“只根据上下文回答”、“不要编造”）。
-1. **上下文数据（Context）**：这是你检索到的那几段文字，通常用特殊符号包裹。
+1. **角色设定（Role）：告诉 LLM 它是谁（专业的知识库助手）。**
+1. **任务指令（Instruction）：核心规则（比如“只根据上下文回答”、“不要编造”）。**
+1. **上下文数据（Context）：这是你检索到的那几段文字，通常用特殊符**号包裹。
+1. **Json输出可以加一层校验可能引入{}**
 1. **用户问题（Query）**：用户真正问的内容。
-1. Json输出可以加一层校验
+1. **结构化提示词**         **#角色     # 规则**
+1. **Few-Short少量样本（几个示例）**
+1. **提供上下文信息(RAG增强检索）**
 
 ```
 结构化提示词
@@ -827,8 +1302,6 @@ Few-Short少量样本
 示例2
 ```
 
-**系统提示词**
-
 ```
 messages=[
             {"role": "system", "content": "You are a helpful assistant."},
@@ -836,40 +1309,161 @@ messages=[
         ]
 ```
 
-**特点**
+**系统提示词**
 
-- 用户通常看不到或不能直接修改；但是做大模型应用开发的时候，代码里面是可以指定系统提示词的。
-- 在每次对话中隐式地作用于模型；
-- 是模型“默认行为”的基础。
+- **用户通常看不到或不能直接修改；但是做大模型应用开发的时候，代码里面是可以指定系统提示词的。**
+- **在每次对话中隐式地作用于模型；**
+- **是模型“默认行为”的基础**。
 
 **用户提示词**
 
-特点
+- **由用户自由输入；**
+- **决定单次交互的具体内容方向**
 
-- 由用户自由输入；
-- 决定单次交互的具体内容方向
+````
+# 角色定义
+你是一名专业的旅行规划顾问，擅长根据用户偏好制定个性化的旅游计划。  
+你需要以Markdown格式输出一份简洁、清晰、实用的行程安排。  
+---
+# 任务描述
+根据用户输入的出行需求（如目的地、天数、兴趣点等），制定一个详细的旅行计划。  
+要求内容包括：
+1. 每日行程安排（含景点、交通、餐饮推荐）  
+2. 总体花费预估（以人民币计）  
+3. 温馨提示（如天气、穿衣建议、注意事项）
+---
+# 景点参考信息（上下文信息）
+以下是部分城市旅游参考资料（供你在规划时参考）：
+[文档片段1]
+北京以历史文化景点为主，热门景点包括故宫、长城、颐和园。春秋季节气候宜人，适合户外活动。  
 
-##### **优化prompt**
+[文档片段2]
+上海以现代都市景观与夜景闻名，热门景点包括外滩、迪士尼、豫园。地铁交通便利，美食多样。  
 
-思维链（模型thking过程）一步一步完成
+[文档片段3]
+成都以美食和休闲文化著称，热门景点包括宽窄巷子、大熊猫基地、都江堰，节奏悠闲，消费亲民。
+---
+# 示例
+## 示例1：
+输入：我想去北京玩两天，主要想看名胜古迹。
+输出：
+```markdown
+  # 北京两日游行程规划
+  
+  ## 第一天：历史文化探索
+  - 上午：参观 **故宫**  
+  - 下午：游览 **天安门广场**、**王府井步行街**  
+  - 晚餐推荐：全聚德烤鸭  
+  
+  ## 第二天：自然与皇家园林
+  - 上午：游览 **颐和园**  
+  - 下午：前往 **八达岭长城**  
+  - 晚餐推荐：老北京炸酱面  
+  
+  ### 预算预估
+  约 ¥1200 / 人（含交通与餐饮）
+  
+  ### 温馨提示
+  - 早晚温差较大，请带外套。  
+  - 部分景区需提前预约。
+```
 
-首先输出一个**详细的、逻辑连贯的推理过程**，然后再基于这个过程得出结论。
+## 示例2：
+输入：帮我规划一个上海三天的亲子游。
+输出：
+```markdown
+  # 上海三日亲子游计划
+  
+  ## 第一天：城市初体验
+  - 上午：参观 **上海自然博物馆**  
+  - 下午：漫步 **外滩**，夜游黄浦江  
+  - 晚餐推荐：蟹粉小笼包  
+  
+  ## 第二天：迪士尼奇幻乐园
+  - 全天游玩 **上海迪士尼乐园**  
+  - 晚餐推荐：园区主题餐厅  
+  
+  ## 第三天：城市休闲与购物
+  - 上午：游览 **豫园**  
+  - 下午：南京路步行街自由活动  
+  - 晚餐推荐：新天地西餐厅  
+  
+  ### 预算预估
+  约 ¥2200 / 人（含门票与住宿）
+  
+  ### 温馨提示
+  - 提前预约迪士尼门票。  
+  - 夏季炎热，请携带防晒用品。
+  ```
 
-**自我一致性**
+---
 
-- **并发调用**：奇数次调用大模型可**并行执行**，显著降低整体响应时间。
+# 按照如下格式输出：
+# <城市+天数>行程规划标题
+
+## 第一天：
+- 上午：
+- 下午：
+- 晚餐推荐：
+
+## 第二天：
+- 上午：
+- 下午：
+- 晚餐推荐：
+
+## 第三天：
+- 上午：
+- 下午：
+- 晚餐推荐：
+
+### 预算预估
+### 温馨提示
+
+---
+
+# 当前任务
+请根据以下用户输入，生成Markdown格式的旅行行程方案：
+
+用户输入：
+“我打算去成都玩三天，想吃美食也想看看大熊猫。”
+请确保按照指定的输出格式输出，不要输出多余解释或说明。
+````
+
+#### **优化**
+
+**思维链（模型thking过程）一步一步完成**
+
+- 首先输出一个**详细的、逻辑连贯的推理过程**，再基于这个过程得出结论。
+- **指定每一个小问题，模型一个个回答**
+
+**自我一致性(少数服从多数)**
+
+- **并发调用**：**奇数次调用**大模型可**并行执行**，显著降低整体响应时间。
 - **参数调节**：适当调整**tempature温度系数**或者**top-p**等模型超参，控制模型输出的多样性。条件允许的话，也可以使用不同的大模型，以增强推理路径的多样性。
 
 ```
 如果孩子被别的小朋友校园霸凌了，要不要鼓励他勇敢打回去？ 
 
 请从以下多个视角分别独立思考，并综合给出最终答案： 
-//多次调用模型
+//多次调用不同模型=>(汇总多个模型回答，分析)
 1、孩子的父母 
 2、育儿专家 
 3、学校老师 
 4、心理学家
 5、孩子自身的角度
+```
+
+**思维树**
+
+- **设计三种方案并分别评估优缺点**
+- **最终拿到最好的结果**
+
+```
+[任务]设计订单到期关闭方案 
+
+[步骤一]设计3种订单到期关闭的方案 
+[步骤二]对每种方案评估他的优缺点 
+[步骤三]综合3种方案，选择一个最优方案
 ```
 
 **反思机制**
@@ -878,31 +1472,31 @@ messages=[
 
  **生成 → 反思 → 修订 → 再反思 → 再修订 …... → 生成最终答案**
 
+**ReAct**
 
+它是一种结合**思考**（Reason）与**行动**（Act）的智能体框架
 
+**先思考后行动，再观察结果后修正思考**。
+**思考推理**
 
+规划下一步、分解复杂任务或分析上一步行动的结果，生成具体的**执行计划**。延续了**思维链（CoT）**的优势，提供了动态推理和自主规划的能力。
 
+**行动（工具调用）**
 
+基于执行计划中每一步的指令要求，模型会自主选择并执行一个外部工具或 API（如联网查询、数学计算、代码生成、知识库查询等）。这也是大模型能够与外部世界建立连接的接口。
 
-##### LLM生成
+**观察 / 反馈**
 
-```python
-from openai import OpenAI
+反馈智能体成功获取到工具执行的结果后，将会根据原始问题和工具的执行结果，判断任务是否完成，如果未完成，则继续返回思考推理，生成下一步行动的结果，反复循环迭代。如果已完成，则直接进入总结阶段。
 
-client = OpenAI()
+**输出总结**
 
-response = client.chat.completions.create(
-    model="gpt-4",
-    messages=[
-        {"role": "system", "content": "你是一个专业的医疗助手"},
-        {"role": "user", "content": prompt}
-    ],
-    temperature=0.3,  # 降低随机性，提高准确性
-    max_tokens=500
-)
+当判断任务已完成时，它会整合整个循环过程中收集到的所有关键信息，生成一个全面、连贯的最终答案。
 
-answer = response.choices[0].message.content
-print(answer)
+#### LLM生成
+
+```
+
 ```
 
 ```
@@ -914,9 +1508,9 @@ print(answer)
 石头扫地机器人P10的续航时间是多久？
 ```
 
-- Prompt作为大模型的直接输入，是影响模型输出准确率的关键因素之一。
-- 在RAG场景中，Prompt一般包括任务描述、背景知识（检索得到）、任务指令（一般是用户提问）
-- 根据任务场景和大模型性能在Prompt中适当加入其他指令优化大模型的输出。
+- ***Prompt作为大模型的直接输入，是影响模型输出准确率的关键因素之一。***
+- ***在RAG场景中，Prompt一般包括任务描述、背景知识（检索得到）、任务指令（一般是用户提问）***
+- ***根据任务场景和大模型性能在Prompt中适当加入其他指令优化大模型的输出。***
 
 RAG 并不是“给大模型接个数据库”这么简单，而是一套完整的信息检索与生成协同系统。Embedding 模型决定你“能不能找对东西”，检索策略决定你“会不会漏掉关键事实”，Prompt 工程决定模型“敢不敢胡说”，而最终的生成效果，往往是这些环节共同作用的结果。
 
@@ -1452,13 +2046,13 @@ print(f"✅ 答案: {answer}")
 传统RAG只用向量检索(语义匹配），对关键词精确匹配效果差。本系统采用语义检索+关键词检索双路召回+
 RRF 融合排序：
 
-## GraghRag
+## Agent
 
 
 
 
 
-
+## 长期记忆
 
 
 
@@ -1503,34 +2097,7 @@ Tool = API 的抽象,tool就是调用后端接口的能力：post，get
 }
 ```
 
-### MCP(接口协议)
 
-本质：
-
-让Agent能接外部世界,**协议**就能实现一些api调用
-
-比如：
-
-- 查天气
-- 调交易系统
-- 调音乐生成服务
-
-### Skill
-
-- mcp工具协议描述越来越多
-
-- llm处理巨量输入上下文是有困难的
-
-Skill = Tool 的“目录索引 + 懒加载”
-
-解决问题：
-
-- 上下文爆炸
-- Token成本过高
-
-本质思想：
-
-“不要把全部API丢给LLM，只给它目录
 
 ## Harness
 
@@ -1538,6 +2105,38 @@ Skill = Tool 的“目录索引 + 懒加载”
 
 - 模型：负责思考、推理、决策
 - Harness：负责**稳定、不崩、不跑偏、可持久、可恢复**
+
+
+
+
+
+
+
+
+
+## Skill
+
+
+
+
+
+
+
+## AgentScope
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 大模型微调
 
 ## 解决问题方式
 

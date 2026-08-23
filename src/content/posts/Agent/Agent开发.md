@@ -703,71 +703,1397 @@ public Flux<String> fluxStream() {
 - **.map 是 Reactor 里的映射/转换操作符**
 - **：把流里的每一个元素，一对一地转换成另一个元素。**
 
+#### 实现原理
 
+- **不管是ChatModel还是ChatClient，最终都是依赖reactor.core.publisher.Flux#deferContextual来实现的。**
+- **响应式编程是一种典型的观察者模式，当有新的可用的数据到来时，`Publisher` 会对`Subscriber`进行通知，这种推动是响应式的关键。**
 
+Reactor项目的主要组件为 `reactor-core`。Reactor引入了可组合的响应式类型，这些类型既实现了 `Publisher` 又提供了丰富的操作符：`Flux` 和 `Mono`。
 
+- **Flux` 对象表示含有0..N个元素的响应式序列。**
+- **`Mono` 对象表示单个值或为空（0..1）的结果。**
 
+**Flux 是 Reactor 库中的一个发布者（Publisher）**，遵循 **Reactive Streams 规范**。
 
+它代表一个**异步的、非阻塞的序列**，可以发射：
 
-
+- **0 到多个数据项（`onNext`）**
+- **一个可选的错误（`onError`）**
+- **或一个完成信号（`onComplete`）**
 
 ### 提示词模板
 
+- **本质上利用占位符书写用户提示词**
+- **利用PromptTemplate对象传参**
+- **调用create方法（Map.of("topic ",topic)）**
 
+```
+@GetMapping("/Stream1")
+    public Flux<String> stream1(String topic, HttpServletResponse response){
+        response.setCharacterEncoding("UTF-8");
+        String template= """
+                请为我推荐一些关于{topic}开源项目
+                """;
+      return chatClient.prompt(new  PromptTemplate(template).create(Map.of("topic",topic))).stream().content();
+    }
 
+```
 
+```
+@GetMapping("/promptsEngineer7")
+public Flux<String> chat7(@RequestParam(value = "message") String message, HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
 
+    HashMap variables = new HashMap();
+    variables.put("language", "Java");
+    variables.put("topic", message);
+    PromptTemplate promptTemplate = PromptTemplate.builder().template("请给我推荐几个关于{topic}的开源项目,要求是和编程语言{language}相关的。").variables(variables).build();
 
+    return chatClient.prompt(promptTemplate.create(Map.of("topic", message))).system("你是一个专业的的github项目收集人员").stream().content();
+}
+```
 
+![image.webp](https://img.f3f3.top/picgo/1787318583254_image.webp)
 
+**把提示词通过文件来管理，一般使用.st文件，可以在项目中定义一个目录，然后把所有提示词都放在这个目录下，**
 
+**prompts/open-source-system-prompt.st文件内容**
 
+```
+请给我推荐几个关于{topic}的开源项目,要求是和编程语言{language}相关的。
+```
+
+```
+  @GetMapping("/chat2")
+    public Flux<String> chat2( String topic, HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+
+        Map<String, Object> variables = new HashMap<>();
+        variables.put("language", "Java");
+        variables.put("topic", topic);
+        PromptTemplate promptTemplate = PromptTemplate.builder().resource(systemText).variables(variables).build();
+        return chatClient.prompt(promptTemplate.create()).system("你是一个专业的的github项目收集人员").stream().content();
+    }
+```
 
 ### 结构化输出
 
+#### bean
 
+**StructuredOutputConverter的接口有实现类BeanOutputConverter**
 
+![image.webp](https://img.f3f3.top/picgo/1787322893825_image.webp)
 
+**BeanOutputConverter这个类中重写了一个getFormat方法**
 
+**内容为一段提示词，把这段提示词加到我们的对话的后面，就能得到我们想要的JSON格式**
 
+```
+@Override
+public String getFormat() {
+    String template = """
+            Your response should be in JSON format.
+            Do not include any explanations, only provide a RFC8259 compliant JSON response following this format without deviation.
+            Do not include markdown code blocks in your response.
+            Remove the ```json markdown from the output.
+            Here is the JSON Schema instance your output must adhere to:
+            ```%s```
+            """;
+                return String.format(template, this.jsonSchema);
+}
+```
 
+**提前告诉Converter我们都需要哪些字段。BeanOutputConverter通过他的名字就能看出来，他其实是可以把模型的结构化输出转成一个bean的，而bean的话我们是可以提前定义好他的参数名**
 
+```
+public record Book(@JsonPropertyDescription("书籍名称") String title,
+                   @JsonPropertyDescription("作者") String author,
+                   @JsonPropertyDescription("书籍介绍") String description,
+                   @JsonPropertyDescription("价格") BigDecimal price) {
+
+}
+```
+
+```
+  @GetMapping("/bean")
+    public Book bean(String format) {
+        BeanOutputConverter<Book> beanOutputConverter = new BeanOutputConverter<>(Book.class);
+        return chatClient.prompt(new PromptTemplate("你需要推荐一本书，请以{format}格式输出")
+                .create(Map.of("format", beanOutputConverter.getFormat())))
+                .system("你是一个专业的图书推荐人员")
+                .call()
+                .entity(beanOutputConverter);
+    }
+```
+
+```
+@GetMapping("/chat2")
+public String chat2(HttpServletResponse response) {
+    Book book = chatClient.prompt("请帮我推荐几本java相关的书").system("你是一个专业的图书推荐人员").call().entity(Book.class);
+    return book.toString();
+}
+```
+
+**BeanOutputConverter只能针对String做转换，Flux<String>是不支持的。必须完整结果才能转换成bean。**
+
+**.call.content返回值为字符串，需要借助entity转为Bean**
+
+**第一行是参数合法性检测，**
+
+**第二行是new 一个 BeanOutputConverter**
+
+- **BeanOutputConverter的构造函数依赖ParameterizedTypeReference创建的，**
+- **直接用ParameterizedTypeReference.forType(clazz)来把一个任意Class转成BeanOutputConverter需要。**
+
+**第三行是调用doSingleWithBeanOutputConverter方法**：
+
+- **在 LLM 调用之前，Converter向提示中添加格式指令，为模型提供明确的指导，以生成所需的输出结构。（doGetObservableChatClientResponse方法中）**
+- **在 LLM 调用之后，Converter将模型的输出文本转换为结构化类型的实例。（outputConverter.convert(stringResponse)）**
+
+#### List
+
+**StructuredOutputConverter的实现类，除了BeanOutputConverter之外，还有ListOutputConverter、MapOutputConverter**
+
+```
+List<Book> result = chatClient.prompt("请帮我推荐几本java相关的书")
+.system("你是一个专业的图书推荐人员")
+.call().entity(
+
+new ParameterizedTypeReference<
+//抽象类需要重写方法
+List<Book>>() {
+  });
+```
+
+```
+Map<String, Object> book = chatClient.prompt("请给我推荐几本心理学有关的书，书的内容包括书名、作者、价格、上市时间等信息，以书名作为key，书的信息作为value")
+        .call().entity(new MapOutputConverter());
+```
+
+- **不支持转成List<Bean>和Map<String,Bean>，只能转成List<String>和Map<String,Object>，**
+- **最终转成的内容并不是我们想要的，比如我们要一个完成的book，他可能只输出了一个书名的List。**
+
+- **利用java8中的stream()转为List后自己转为Map或者设置few-shot提示词**
 
 ### 对话记忆
 
+#### Message List
+
+```
+@RestController
+@RequestMapping("/ai/memory")
+public class ChatMemoryController implements InitializingBean {
+
+    @Autowired
+    private DashScopeChatModel chatModel;
+
+    private ChatClient chatClient;
+
+    @GetMapping("/chat")
+    public String chat() {
+
+        List<Message> messages = new ArrayList<>();
+
+        //第一轮对话
+        messages.add(new SystemMessage("你是一个游戏设计师"));
+        messages.add(new UserMessage("我想设计一个回合制游戏"));
+        ChatResponse chatResponse = chatModel.call(new Prompt(messages));
+        String content = chatResponse.getResult().getOutput().getText();
+        System.out.println(content);
+        System.out.println("======");
+
+        messages.add(new AssistantMessage(content));
+
+        //第二轮对话
+        messages.add(new UserMessage("能帮我结合一些二次元的元素吗?"));
+        chatResponse = chatModel.call(new Prompt(messages));
+        content = chatResponse.getResult().getOutput().getText();
+        System.out.println(content);
+        System.out.println("======");
+
+        messages.add(new AssistantMessage(content));
+
+        //第三轮对话
+        messages.add(new UserMessage("那如果主要是针对女性玩家的游戏呢?有什么需要改进的？"));
+        chatResponse = chatModel.call(new Prompt(messages));
+        content = chatResponse.getResult().getOutput().getText();
+        System.out.println(content);
+        System.out.println("======");
+
+        return content;
+    }
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        ChatMemory chatMemory = new InMemoryChatMemory();
+
+        this.chatClient = ChatClient.builder(chatModel)
+                // 实现 Logger 的 Advisor
+                .defaultAdvisors(new MessageChatMemoryAdvisor(chatMemory))
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(
+                        DashScopeChatOptions.builder()
+                                .withTopP(0.7)
+                                .build()
+                )
+                .build();
+    }
+}
+
+```
+
+#### chatid
+
+- **message list是要每一次都重新add进去，传给大模型**
+- **对话的历史message，我们是在代码中有调用记录的。**
+- **记忆的消息设置同一个chat_memory_conversation_id，同一个这样的id下的消息就可以识别出来，这样就能组装成上面的message list给到LLM。**
+
+```
+@Autowired
+private ChatModel chatModel;
+
+private ChatClient chatClient;
+
+    @GetMapping("/chat1")
+    public Flux<String> chat1(String message, String chatId, HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+
+        return chatClient
+                .prompt()
+                .user(message)
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+                .stream().content();
+
+    }
+```
+
+```
+@Aut   
+   
+   
+   
+   @Override
+    public void afterPropertiesSet() throws Exception {
+     //   ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(10).build();
+
+        this.chatClient = ChatClient.builder(chatModel)
+                
+                //利用builder 实现 ChatMemoryAdvisor 的 Advisor              .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(
+                        DashScopeChatOptions.builder()
+                                .withTopP(0.7)
+                                .build()
+                )
+                .build();
+```
+
+**MessageWindowChatMemory,** 
+
+- **Spring AI 框架中窗口对话记忆实现。**
+- **核心思想是：只保留最近发生的、一定数量的交互消息，当消息数量超过窗口大小时，会自动将最早的消息移除**。
+- **ChatMemory的maxMessages，里面的message的最大记忆条数，包括了UserMessage、AssistantMessage等，并不是说只有用户的对话内容。**
+
+**想要构造一个MessageWindowChatMemory，可以用ChatMemoryAdvisor，有两个具体的实现**：
+
+- **MessageChatMemoryAdvisor：这个Advisor的主要功能是将用户提出的问题和模型的回答添加到历史记录(messages)中，从而实现上下文记忆的能力。**
+- **PromptChatMemoryAdvisor：是MessageChatMemoryAdvisor的一个增强，在有些不支持messages参数的模型使用的时候，可以用这种，他是改写了systemPrompt，把每一轮的输入和输出都补充到这里面去了。**
+
+#### ChatMemory
+
+- **MessageWindowChatMemory不用自己new**
+- **注入的是一个基于内存的对话记忆**
+
+```
+<!--    chatMemoy基于内存对话记忆-->
+    <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-autoconfigure-model-chat-memory</artifactId>
+        <version>1.1.0</version>
+    </dependency>
+```
+
+```
+ChatClient.builder(chatModel)        .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+```
+
+- **用 `chatModel` 构建客户端**
+
+- **把“记忆顾问”挂上去**
+
+**`记忆顾问`是MessageChatMemoryAdvisor`**
+
+它的身份可以理解为
+
+- `ChatClient` 的一个 `Advisor`
+- 负责在每次请求前，按 `chatId` 去 `ChatMemory` 里取历史消息
+- 再把这些历史消息塞进本次 prompt
+- 模型返回后，再把新消息写回记忆
+
+```
+.advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, chatId))
+```
+
+- **`chatId` 不是直接传给模型**
+- **它是传给 `MessageChatMemoryAdvisor`**
+- **这个 advisor 会用它去定位“这是谁的历史消息”**
+
+```
+// 伪代码
+history = chatMemory.get(chatId);
+prompt = history + 当前用户消息;
+answer = model.generate(prompt);
+chatMemory.save(chatId, 用户消息, answer);
+
+请求 -> ChatClient -> MessageChatMemoryAdvisor -> ChatMemory -> ChatMemoryRepository -> 存储后端
+```
+
+#### 总结
+
+##### 策略
+
+**`ChatMemory`：记忆策略层，负责“保留哪些消息、何时裁剪”**
+
+**MessageWindowChatMemory**
+
+- **`MessageWindowChatMemory` 只管窗口策略，不管具体存储。**
+- **它 `add()` 时会先从仓库读出当前会话消息，再把新消息合并、裁剪，最后整体 `saveAll()` 回去。**
+- **所以“记忆”不是历史全量保存，而是当前上下文窗口。**
+
+**它默认是一个基于内存的短期记忆实现，它维护最多指定最大大小（默认值：20 条消息）的消息窗口。** 
+
+##### 存储
+
+**`ChatMemoryRepository`：存储层，负责“把消息存哪、怎么取出来”**
+
+```mermaid
+classDiagram
+    direction LR
+
+    class ChatMemory {
+      <<interface>>
+    }
+
+    class MessageWindowChatMemory {
+      <<class>>
+      -chatMemoryRepository
+      -maxMessages = 20
+    }
+
+    class ChatMemoryRepository {
+      <<interface>>
+    }
+
+    class InMemoryChatMemoryRepository {
+      <<class>>
+    }
+    class JdbcChatMemoryRepository {
+      <<class>>
+    }
+    class CassandraChatMemoryRepository {
+      <<class>>
+    }
+    class Neo4jChatMemoryRepository {
+      <<class>>
+    }
+    class MongoChatMemoryRepository {
+      <<class>>
+    }
+    class CosmosDBChatMemoryRepository {
+      <<class>>
+    }
+
+    ChatMemory <|.. MessageWindowChatMemory
+
+    ChatMemoryRepository <|.. InMemoryChatMemoryRepository
+    ChatMemoryRepository <|.. JdbcChatMemoryRepository
+    ChatMemoryRepository <|.. CassandraChatMemoryRepository
+    ChatMemoryRepository <|.. Neo4jChatMemoryRepository
+    ChatMemoryRepository <|.. MongoChatMemoryRepository
+    ChatMemoryRepository <|.. CosmosDBChatMemoryRepository
+
+    MessageWindowChatMemory --> ChatMemoryRepository : read / trim / write
+    MessageWindowChatMemory --> InMemoryChatMemoryRepository : default
+```
+
+| 类/接口                         | 类型 | 关系                                                   | 职责                       | 典型特点                                         |
+| ------------------------------- | ---- | ------------------------------------------------------ | -------------------------- | ------------------------------------------------ |
+| `ChatMemory`                    | 接口 | 被 `MessageWindowChatMemory` 实现                      | 定义“聊天记忆”这一层抽象   | 负责记忆策略，不负责具体存储                     |
+| `ChatMemoryRepository`          | 接口 | 被各类 Repository 实现                                 | 定义消息的存取能力         | 负责持久化/读取聊天消息                          |
+| `MessageWindowChatMemory`       | 类   | `implements ChatMemory`，并依赖 `ChatMemoryRepository` | 按窗口大小维护上下文消息   | 默认最大 20 条；默认仓库是内存实现               |
+| `InMemoryChatMemoryRepository`  | 类   | `implements ChatMemoryRepository`                      | 将消息存到本地内存         | 基于 `ConcurrentHashMap`；进程重启即丢失         |
+| `JdbcChatMemoryRepository`      | 类   | `implements ChatMemoryRepository`                      | 将消息存到关系型数据库     | 支持 PostgreSQL / MySQL / SQL Server / Oracle 等 |
+| `CassandraChatMemoryRepository` | 类   | `implements ChatMemoryRepository`                      | 将消息存到 Cassandra       | 适合高可用、TTL、分布式场景                      |
+| `Neo4jChatMemoryRepository`     | 类   | `implements ChatMemoryRepository`                      | 将消息存到 Neo4j 图数据库  | 适合保留关系结构和图查询                         |
+| `MongoChatMemoryRepository`     | 类   | `implements ChatMemoryRepository`                      | 将消息存到 MongoDB         | 面向文档存储，结构灵活                           |
+| `CosmosDBChatMemoryRepository`  | 类   | `implements ChatMemoryRepository`                      | 将消息存到 Azure Cosmos DB | 外部模块，不属于 Spring AI 核心包                |
+
+### 持久化记忆
+
+#### 配置
+
+**引入jdbc对话记忆仓库**
+
+```
+dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-model-chat-memory-repository-jdbc</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787442746778_image.webp)
+
+**一个是jdbc操作的工具包，一个是对他做自动化配置的。**
+
+```
+spring:
+  application:
+    name: demo
+  ai:
+    dashscope:
+      api-key: sk-ws-H.EHMYHYX.VeUc.MEUCIQDyLgMI5VSHAOyUHnbblT4muC2q2DhOXkCPY9OY_a9GCAIga6OiX6wD-bOZtgzy4iGErxOZiP4E_QPbJtUcEPGYYr4
+    chat:
+        memory:
+          repository:
+            jdbc:
+              platform: mysql
+              initialize-schema: always
+```
+
+- **platform用于指定具体哪个数据库，他支持很多数据库**
+- **在platform和schema二选一进行配置就行了，就是指定用哪个表结构**
+
+```
+CREATE TABLE `spring_ai_chat_memory` (
+  `conversation_id` varchar(36) CHARACTER SET utf8mb4 NOT NULL,
+  `content` text CHARACTER SET utf8mb4 NOT NULL,
+  `type` enum('USER','ASSISTANT','SYSTEM','TOOL') CHARACTER SET utf8mb4 NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY `SPRING_AI_CHAT_MEMORY_CONVERSATION_ID_TIMESTAMP_IDX` (`conversation_id`,`timestamp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+;
+```
+
+**数据库交互还需要一个datasource，我们需要有个数据库连接的能力，**
+
+```
+<dependency>
+    <groupId>mysql</groupId>
+    <artifactId>mysql-connector-java</artifactId>
+    <version>8.0.33</version>
+</dependency>
+```
+
+```
+  datasource:
+    url: jdbc:mysql://localhost:3306/springai?useUnicode=true&characterEncoding=UTF-8  # 记得改成你自己的
+    username: root  # 记得改成你自己的
+    password: 123456  # 记得改成你自己的
+    driver-class-name: com.mysql.cj.jdbc.Driver
+```
+
+#### 引入仓库
+
+```
+@Configuration
+public class JdbcChatMemoryConfiguration {
+
+    @Bean
+    public ChatMemory jdbcChatMemory(JdbcChatMemoryRepository jdbcChatMemoryRepository) {
+        return MessageWindowChatMemory.builder().chatMemoryRepository(jdbcChatMemoryRepository).maxMessages(20).build();
+    }
+}
+
+```
+
+**cassandra和neo4j的支持可供选择**
+
+```
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-model-chat-memory-repository-cassandra</artifactId>
+</dependency>
+```
+
+```
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-model-chat-memory-repository-neo4j</artifactId>
+</dependency>
+```
+
+### Advisor
+
+#### 初识
+
+**用于拦截、修改和增强 Spring 应用中的 AI 交互功能**
+
+```
+.defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+```
+
+```
+.defaultAdvisors(
+                        new SimpleLoggerAdvisor()
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787446671557_image.webp)
+
+- **Advisor接口继承自Ordered，需要在实现`int getOrder();` 这个方法。**
+- **这个方法主要是用来设置各个Advisor的顺序的。**
+
+```
+public interface Advisor extends Ordered {
+    int DEFAULT_CHAT_MEMORY_PRECEDENCE_ORDER = -2147482648;
+    String getName();
+}
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787446880918_image.webp)
+
+- **最基础的两个接口，一个是CallAdvisor一个是StreamAdvisor，**
+- **一个是给同步调用使用的，另一个是给流式调用使用的**
+
+- **提供了adviseCall和adviseStream方法**
+
+**ChatClient 不是直接调某个 advisor，而是栈式递归**
+
+**把所有注册到一个chatClient上的Advisor都找出来，然后按顺序执行**
+
+**第一步**
+
+- **DefaultChatClient` 负责把请求组装好，再启动链。**
+
+- **`DefaultChatClient` 会把当前 chatClient 上注册的 advisor 按 `order` 组进 advisorChain**
+
+**第二步**
+
+
+- **然后同步走 nextCall()，流式走 nextStream()**
+- **advisorChain.nextCall(chatClientRequest)**
+- **advisorChain.nextStream(chatClientRequest)**
+
+ **不是“调用一个 advisor”，而是“启动一整条责任链”，每个 advisor 都像 AOP 的一层织入，先进来的先包住请求，最后再包回响应**
+
+**第三步**
+
+- **ChatModelCallAdvisor / ChatModelStreamAdvisor`。链上的每个 advisor 都像 AOP 的一层环绕增强，**
+- **`ChatModelCallAdvisor`：终点，真正调用 `chatModel.call(...)`，没有它链就断了**
+
+**顺序**
+
+- **order 越小，越先进入链**
+- **越先进入的，越晚拿到响应**
+- **order 越大，越靠近 ChatModelCallAdvisor 这个终点**
+
+**分类**
+
+- `SimpleLoggerAdvisor`：典型环绕型，前后都做日志，不改业务
+- `SafeGuardAdvisor`：前置拦截 / 后置审查，必要时直接挡掉请求
+- `BaseAdvisor`：模板层，把 `before / after` 这套样板封装掉，让具体 advisor 少写重复代码
+
+#### ChatModel
+
+**直接调用chatModel的call方法**
+
+![image.webp](https://img.f3f3.top/picgo/1787449320609_image.webp)
+
+**理论上最后执行的，所以getOrder设置的是最低优先级。**
+
+```
+@Override
+public int getOrder() {
+    return Ordered.LOWEST_PRECEDENCE;
+```
+
+#### SimpleLogger
+
+![image.webp](https://img.f3f3.top/picgo/1787449616938_image.webp)
+
+**adviseCall实现先记录一下request的日志，在调用之后，再记录一下response的日志。**
+
+#### SafeGuard
+
+![image.webp](https://img.f3f3.top/picgo/1787450279290_image.webp)
+
+**这是一个spring ai内置的安全审查的advisor，实现内容就是做敏感词拦截**：
+
+#### Base
+
+```
+ChatClientRequest processedRequest = before(chatClientRequest, callAdvisorChain);
+
+ChatClientResponse response = callAdvisorChain.nextCall(processedRequest);
+
+return after(response, callAdvisorChain);
+```
+
+- **before()：模型调用前执行，相当于前置增强**
+- **chain.nextCall()：继续执行后面的 advisor，直到最后调用模型**
+- **after()：模型返回后执行，相当于后置增强**
+- **如果某个 advisor 不调用 chain.nextCall()，就等于拦截请求，后面的 advisor 和模型都不会执行**
+
+**Advisor 的“目标方法”不是某个 Service 方法，而是“后续 advisor + 最终 ChatModel 调用”**
+
+```mermaid
+sequenceDiagram
+    participant Client as ChatClient
+    participant A as Advisor A
+    participant B as Advisor B
+    participant C as Advisor C
+    participant M as ChatModel
+
+    Client->>A: before A
+    A->>B: chain.nextCall
+    B->>C: before B / chain.nextCall
+    C->>M: before C / call model
+    M-->>C: ChatResponse
+    C-->>B: after C
+    B-->>A: after B
+    A-->>Client: after A
+```
+
+**`order` 越小，越早处理请求；但它越晚处理响应**
+
+**MessageChatMemoryAdvisor 的 before**
+
+```
+用户这次的问题 + 历史对话记录
+        ↓
+组合成新的 Prompt
+        ↓
+再交给后面的 advisor / ChatModel
+```
+
+**模型并不是“自动记住上下文”，而是 `MessageChatMemoryAdvisor` 每次调用前主动把历史消息查出来，再塞到本次请求里。**
+
+```
+before 阶段：保存 user message
+after 阶段：保存 assistant message
+before：读取历史记忆 + 拼进本次请求 + 保存用户消息
+after：提取模型回复 + 保存助手消息
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787451280998_image.webp)
 
 
 
+- 用户传入 `Prompt`，Spring AI 先包装成 `ChatClientRequest`。  
+- 请求进入 advisor 链，每个 advisor 可以检查、修改、增强请求。  
+- 最终框架内置的模型调用 advisor 把请求发给 `ChatModel`。  
+- `ChatModel` 返回 `ChatResponse`。  
+- 响应再倒着穿过 advisor 链，每个 advisor 可以记录、修改或增强响应。  
+- 最后 `ChatClientResponse` 被转换成用户拿到的 `content()`、`chatResponse()` 或实体对象
+
+#### 本地模型
+
+```
+      <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-ollama</artifactId>
+            <version>1.1.0</version>
+        </dependency>
+```
+
+```
+<dependency>
+     <groupId>org.springframework.ai</groupId>
+     <artifactId>spring-ai-autoconfigure-model-ollama</artifactId>
+     <version>1.1.0</version>
+ </dependency>
+```
+
+```
+@Autowired
+@Qualifier("ollamaChatModel")
+private ChatModel ollamaChatModel;
+```
+
+```
+@RestController
+@RequestMapping("/ai/ollama")
+public class OllamaChatController {
+
+    @Autowired
+    @Qualifier("ollamaChatModel")
+    private ChatModel ollamaChatModel;
+
+    @GetMapping("/stream/chat")
+    public Flux<String> streamChat(HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+        Flux<ChatResponse> stream = ollamaChatModel.stream(new Prompt("你是谁？"));
+        return stream.map(resp -> resp.getResult().getOutput().getText());
+    }
+}
+```
+
+## LangChain4j
+
+### 配置
+
+**LangChain4j就是一个Java版的LangChain框架**
+
+```
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j</artifactId>
+    <version>1.8.0</version>
+</dependency>
+
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-open-ai-spring-boot-starter</artifactId>
+    <version>1.8.0-beta15</version>
+</dependency>
+```
+
+### 高层次
+
+```
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-spring-boot-starter</artifactId>
+    <version>1.8.0-beta15</version>
+</dependency>
+```
+
+### 普通对话
+
+**只定义一个 Java 接口，LangChain4j 在运行时帮你生成实现类，内部自动完成“组装 Prompt、调用模型、解析结果、处理记忆、工具调用”等流程**
+
+```
+@AiService
+public interface LangChainAiService {
+    String chat(String userMessage);
+}
+```
+
+- **@AiService 之后，它会被 Spring 扫描，并注册成一个 Bean**
+- **被 @AiService标注的接口会自动创建实现类并注册到 Spring 容器中**
+
+```
+@Autowired
+private LangChainAiService aiService;
+
+@RequestMapping("/chat")
+public String chat(HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
+    return aiService.chat("日本都有哪些美食？");
+}
+```
+
+```mermaid
+flowchart TD
+    A[浏览器请求 /chat] --> B[Controller 调用 aiService.chat]
+    B --> C[进入 LangChain4j 生成的代理对象]
+    C --> D[把 String 参数包装成 UserMessage]
+    D --> E[组装 ChatRequest]
+    E --> F[调用 ChatModel.chat]
+    F --> G[LLM 返回 ChatResponse]
+    G --> H[解析成 String]
+    H --> I[返回给 Controller]
+```
+
+### 流式输出
+
+```
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-reactor</artifactId>
+    <version>1.8.0-beta15</version>
+</dependency>
+```
+
+```
+@AiService
+public interface LangChainAiService {
+    Flux<String> chatStream(String userMessage);
+}
+```
+
+```
+@GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public Flux<String> stream(String msg) {
+    return aiService.chatStream(msg);
+}
+```
+
+```mermaid
+flowchart TD
+    A[请求 /stream] --> B[调用 chatStream]
+    B --> C[生成代理对象处理方法]
+    C --> D[组装 Streaming ChatRequest]
+    D --> E[调用 StreamingChatModel]
+    E --> F[模型逐 token 返回]
+    F --> G[Flux<String> 持续推送]
+    G --> H[前端逐段显示]
+```
+
+**普通 `String` 返回值是“等模型完整回答完再返回”，`Flux<String>` 是“模型生成一点就返回一点**
+
+### 默认提示词
+
+**用 @SystemMessage 和 @UserMessage`给接口方法加默认提示词**
+
+```
+@AiService
+public interface LangChainAiService {
+
+    @SystemMessage("你是一个毒舌博主，擅长怼人")
+    @UserMessage("针对用户的内容：{{topic}}，先复述一遍他的问题，然后再回答")
+    Flux<String> chatStream(String topic);
+}
+```
+
+```
+@UserMessage(fromResource = "your-prompt-template.txt")
+String chat(String topic);
+```
+
+### 结构化输出
+
+```
+@AiService
+public interface LangChainAiService {
+
+    @UserMessage("请帮我推荐1本java相关的书")
+    @SystemMessage("你是一个专业的图书推荐人员")
+    Book getBooks();
+}
+```
+
+```
+@RequestMapping("/structure1")
+public String structure1(HttpServletResponse response) {
+    response.setCharacterEncoding("UTF-8");
+    Book book = aiService.getBooks();
+    return book.toString();
+}
+```
+
+```mermaid
+flowchart TD
+    A[调用 getBooks] --> B[组装系统提示词和用户提示词]
+    B --> C[告诉模型按 Book 结构返回]
+    C --> D[LLM 返回文本]
+    D --> E[LangChain4j 尝试解析成 Book]
+    E --> F[Controller 返回 book.toString]
+```
+
+### 对话记忆
+
+```
+@AiService
+public interface LangChainMemoryAiService {
+
+    String chatMemory(@MemoryId String memoryId,
+                      @UserMessage String userMessage);
+}
+```
+
+- **如果用了 @MemoryId，就必须配置 `ChatMemoryProvider`**
+- **chatMemoryProvider 根据不同 memoryId 提供不同的 ChatMemory 实例**
+
+```
+langChainMemoryAiService = AiServices.builder(LangChainMemoryAiService.class)
+        .chatModel(chatModel)
+        .streamingChatModel(streamingChatModel)
+        .chatMemoryProvider(memoryId ->
+                MessageWindowChatMemory.withMaxMessages(10)
+        )
+        .build();
+```
+
+```
+@RestController
+@RequestMapping("/langchain")
+public class LangChainController implements InitializingBean {
+
+    private LangChainMemoryAiService langChainMemoryAiService;
+
+    @RequestMapping("/memoryChat")
+    public String memoryChat(HttpServletResponse response,
+                             String msg,
+                             String memoryId) {
+        response.setCharacterEncoding("UTF-8");
+        return langChainMemoryAiService.chatMemory(memoryId, msg);
+    }
+
+    @Override
+    public void afterPropertiesSet() {
+        langChainMemoryAiService = AiServices.builder(LangChainMemoryAiService.class)
+                .chatModel(chatModel)
+                .streamingChatModel(streamingChatModel)
+                .chatMemoryProvider(memoryId ->
+                        MessageWindowChatMemory.withMaxMessages(10)
+                )
+                .build();
+    }
+}
+```
+
+
+
+```mermaid
+flowchart TD
+    A[用户调用 chatMemory memoryId=1234] --> B[根据 memoryId 找 ChatMemory]
+    B --> C[取出历史消息]
+    C --> D[把历史消息 + 本次用户消息组装进请求]
+    D --> E[调用 LLM]
+    E --> F[模型返回回答]
+    F --> G[把用户消息和助手回答写入 ChatMemory]
+    G --> H[返回最终答案]
+```
+
+### 工具调用
+
+**工具调用是让模型在回答前，先判断是否需要调用 Java 方法**
+
+```
+@RequestMapping("/toolCalling")
+public String toolCalling(HttpServletResponse response, String msg) {
+    response.setCharacterEncoding("UTF-8");
+
+    LangChainAiService service = AiServices.builder(LangChainAiService.class)
+            .tools(new TemperatureTools())
+            .chatModel(chatModel)
+            .build();
+
+    return service.chat("2025年11月11日，杭州的气温怎样？");
+}
+```
+
+```
+public class TemperatureTools {
+
+    @Tool("Get temperature by city and date")
+    public String getTemperatureByCityAndDate(String city, String date) {
+        System.out.println("getTemperatureByCityAndDate invoke...");
+        return "23摄氏度";
+    }
+}
+```
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as AiService
+    participant L as LLM
+    participant T as TemperatureTools
+
+    U->>S: 杭州 2025-11-11 气温怎样？
+    S->>L: 发送用户问题 + 工具定义
+    L-->>S: 我要调用 getTemperatureByCityAndDate
+    S->>T: city=杭州, date=2025-11-11
+    T-->>S: 23摄氏度
+    S->>L: 工具结果是 23摄氏度
+    L-->>S: 组织自然语言最终回答
+    S-->>U: 杭州气温预计为23摄氏度
+```
+
+### 按需加载
+
+```
+ToolProvider toolProvider = request -> {
+    if (request.userMessage().singleText().contains("booking")) {
+        ToolSpecification toolSpecification = ToolSpecification.builder()
+                .name("get_booking_details")
+                .description("返回预订详情")
+                .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("bookingNumber")
+                        .build())
+                .build();
+
+        return ToolProviderResult.builder()
+                .add(toolSpecification, toolExecutor)
+                .build();
+    }
+
+    return null;
+};
+```
+
+```
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatLanguageModel(model)
+        .toolProvider(toolProvider)
+        .build();
+```
+
+```
+@AiService：把接口变成 Spring Bean
+String 返回值：普通一次性回答
+Flux<String> 返回值：流式回答，需要 langchain4j-reactor
+@SystemMessage：系统提示词
+@UserMessage：用户提示词或模板
+POJO 返回值：结构化输出
+@MemoryId + ChatMemoryProvider：多会话隔离记忆
+.tools(...)：固定工具列表
+.toolProvider(...)：按需动态加载工具
+```
+
+### @AIservice
+
+- **启动时：把接口 Bean 替换成 AiServiceFactory**
+- **创建时：AiServiceFactory 用 DefaultAiServices 生成 JDK 动态代理**
+- **调用时：代理拦截接口方法，组装请求，最终调用 ChatModel 或 StreamingChatModel**
+
+接口是没法直接实例化的。LangChain4j 把这个接口的 Spring Bean 定义替换掉
+
+```mermaid
+flowchart TD
+    A[Spring Boot 启动] --> B[AiServicesAutoConfig]
+    B --> C[扫描 @AiService 接口]
+    C --> D[找到 LangChainAiService]
+    D --> E[创建 GenericBeanDefinition]
+    E --> F[BeanClass 设置为 AiServiceFactory]
+    F --> G[添加 ChatModel / Memory / Tools 等依赖]
+    G --> H[移除原接口 BeanDefinition]
+    H --> I[注册新的 AiServiceFactory BeanDefinition]
+```
+
+```mermaid
+flowchart TD
+    A[业务注入 LangChainAiService] --> B[Spring 获取 Bean]
+    B --> C[AiServiceFactory.getObject]
+    C --> D[DefaultAiServices.build]
+    D --> E[Proxy.newProxyInstance]
+    E --> F[生成 JDK 动态代理对象]
+    F --> G[返回给 Spring 容器]
+    G --> H[Controller 拿到代理对象]
+```
+
+```
+@AiService 方法调用
+    ↓
+JDK 动态代理 invoke
+    ↓
+解析方法签名和注解
+    ↓
+组装 ChatRequest
+    ↓
+ChatExecutor 执行
+    ↓
+ChatModel.chat
+    ↓
+返回 String / POJO / Flux
+```
+
+```mermaid
+flowchart TD
+    A[调用 chatStream] --> B[进入 InvocationHandler.invoke]
+    B --> C{返回值是否为流式类型}
+    C -->|否| D[SynchronousChatExecutor]
+    D --> E[chatModel.chat]
+    E --> F[返回 String / POJO]
+
+    C -->|是| G[StreamingChatExecutor]
+    G --> H[streamingChatModel.chat]
+    H --> I[适配为 Flux<String>]
+```
 
 
 
 ### 持久化记忆
 
+```mermaid
+flowchart TD
+    A[AiServices 代理对象] --> B[根据 @MemoryId 找到 memoryId]
+    B --> C[ChatMemoryProvider]
+    C --> D[创建/获取 ChatMemory]
+    D --> E[MessageWindowChatMemory]
+    E --> F[ChatMemoryStore]
+    F --> G[(Redis / MySQL / 本地内存)]
+```
 
+- **@MemoryId区分不同会话**
+- **ChatMemoryProvider根据 memoryId 创建 ChatMemory**
+- **MessageWindowChatMemory控制保留最近多少条消息**
 
+- **ChatMemoryStore把消息保存到 Redis / MySQL**
 
+```
+@AiService
+public interface LangChainMemoryAiService {
 
+    String chatMemory(@MemoryId String memoryId,
+                      @UserMessage String userMessage);
+}
+```
 
+```
+public interface ChatMemoryStore {
 
-### Advisor
+    List<ChatMessage> getMessages(Object memoryId);
+    
+    void updateMessages(Object memoryId, List<ChatMessage> messages);
+//这里通常不是“追加一条”，而是“覆盖保存当前窗口内的全部消息
+    void deleteMessages(Object memoryId);
+   //清空上下文
+}
+```
 
+```
+@Component
+public class RedisChatMemoryStore implements ChatMemoryStore {
+    private final RedisTemplate<String, String> redisTemplate;
 
+    public RedisChatMemoryStore(RedisTemplate<String, String> redisTemplate) {
+        this.redisTemplate = redisTemplate;
+    }
 
+    @Override
+    public List<ChatMessage> getMessages(Object memoryId) {
+        String key = buildKey(memoryId);
+        String json = redisTemplate.opsForValue().get(key);
 
+        if (json == null || json.isEmpty()) {
+            return Collections.emptyList();
+        }
 
+        return ChatMessageDeserializer.messagesFromJson(json);
+    }
 
+    @Override
+    public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+        String key = buildKey(memoryId);
+        String json = ChatMessageSerializer.messagesToJson(messages);
+        redisTemplate.opsForValue().set(key, json);
+    }
 
-## LangChain4j
+    @Override
+    public void deleteMessages(Object memoryId) {
+        redisTemplate.delete(buildKey(memoryId));
+    }
 
+    private String buildKey(Object memoryId) {
+        return "langchain4j:chat-memory:" + memoryId;
+    }
+}
+```
 
+```
+langChainMemoryAiService = AiServices.builder(LangChainMemoryAiService.class)
+                .chatModel(chatModel)
+                .chatMemoryProvider(memoryId -> MessageWindowChatMemory.builder().id(memoryId).maxMessages(10).chatMemoryStore(redisChatMemoryStore).build())
+                .build();
+```
 
-
-
-
+```mermaid
+flowchart TD
+    A[用户请求 memoryId=1234] --> B[getMessages]
+    B --> C[从 Redis 查 key]
+    C --> D{是否有历史消息}
+    D -->|没有| E[返回空列表]
+    D -->|有| F[JSON 反序列化为 List ChatMessage]
+    E --> G[加入本次用户消息]
+    F --> G
+    G --> H[updateMessages 保存到 Redis]
+    H --> I[调用 LLM]
+    I --> J[得到 AI 回复]
+    J --> K[再次 updateMessages]
+    K --> L[Redis 中保存完整上下文]
+```
 
 ## Function Calling 
 
+- **大模型自己其实不知道实时/外部数据**
+- **Function Calling = 模型决定要调用哪个函数，并给出参数**
 
+- **学会了发起函数调用请求**
+
+- **真正执行的是你的程序或框架，比如 LangChain4j / Spring AI**
+
+
+
+### 方法转成工具
+
+```
+@Configuration
+public class FunctionCallConfiguration {
+    @Bean
+    @Description("根据用户输入的时区获取该时区的当前时间")
+    public Function<TimeService.Request, TimeService.Response> getTimeFunction(TimeService timeService) {
+        return timeService::getTimeByZoneId;
+    }
+}
+```
+
+Function的定义，他有两个泛型类型参数，分别是T和R
+
+T表示这个function的入参，R表示出参
+
+需要增加一个清晰的描述，讲清楚这个Function是干什么的，这样才能让模型更好的知道什么时候可以调用这个工具。
+
+```
+@Service
+public class TimeService {
+    public Response getTimeByZoneId(Request request) {
+        System.out.println("getTimeByZoneId，zoneId=" + request.zoneId);
+        ZoneId zid = ZoneId.of(request.zoneId);
+        ZonedDateTime zonedDateTime = ZonedDateTime.now(zid);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
+        return new Response(zonedDateTime.format(formatter));
+    }
+
+
+
+public record Request(
+@JsonProperty(required = true, value="zoneId")
+@JsonPropertyDescription("时区，比如 Asia/Shanghai") 
+String zoneId) {}
+
+    public record Response(String time) {
+    }
+}
+
+```
+
+
+
+```
+@RestController
+@RequestMapping("/function")
+@Slf4j
+@RequiredArgsConstructor
+public class FunctionCallController {
+
+    @Autowired
+    private OpenAiChatModel chatModel;
+
+    private ChatClient chatClient;
+
+    @GetMapping("/chat")
+    public String chat(@RequestParam("query") String query) {
+        log.info("chat request => {}", query);
+
+        return chatClient.prompt().toolNames("getTimeFunction").user(query).call().content();
+//        return chatClient.prompt()
+.tools(new TimeTools()).user(query).call().content();
+    }
+
+    @PostConstruct
+    public void init() {
+        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(10).build();
+
+        chatClient = ChatClient.builder(chatModel)
+                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .build();
+    }
+}
+```
+
+### 自定义工具
+
+**定义一个工具给LLM用的话，可以直接借助@Tool 注解**
+
+用@Tool把一个方法声明一个工具，用@ToolParam 来定义每个参数的描述。
+
+```
+public class TimeTools {
+    @Tool(name = "getTimeByZoneId", description = "Get time by zone id")
+    public String getTimeByZoneId(@ToolParam(description = "Time zone id, such as Asia/Shanghai") String zoneId) 
+    {
+        System.out.println("getTimeByZoneId，zoneId=" + zoneId);
+        ZoneId zid = ZoneId.of(zoneId);
+        ZonedDateTime zonedDateTime = ZonedDateTime.now(zid);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
+        return zonedDateTime.format(formatter);
+    }
+}
+```
+
+- **方法转工具.toolNames("getTimeFunction")调用此方法**
+- **自定义工具.tools(newTimeTools())调用用此方法**
+
+### 自动执行
+
+```
+internalToolExecutionEnabled。
+```
+
+- **设置为false的话，Spring AI就不会自动调用，需要开发者自己控制工具的调用**
+- **外部工具调用https://java2ai.com/docs/1.0.0.2/practices/integrations/tool-calling/**
+
+### ToolCalling
+
+**第一步**
+
+**先把工具注册进去,chatClient.tools(...) 把工具对象交给 Spring AI**
+
+```
+this.toolCallbacks.addAll(Arrays.asList(ToolCallbacks.from(toolObjects)));
+```
+
+1. **把工具对象传给 `chatClient.tools(...)`**
+1. **`ToolCallbacks.from(...)` 把它们转成一组 `ToolCallback`**
+1. **Spring AI 后面统一按 `ToolCallback` 去执行**
+
+**这不是把工具“交给模型”，而是注册给 Spring AI**
+
+**第二步**
+
+**Chat Request 里带上 Tool Definition(工具名,工具描述,入参 schema)**
+
+- **AI Model 看见这些工具后，决定要不要调用**
+
+- **是否要调用工具，并输出工具名和参数**；
+
+**第三步**
+
+**如果要调用，模型不会直接执行，而是返回一个 tool call**
+
+- **例如：调用哪个工具**
+- **参数是什么**
+
+**Spring AI 再检查这个 response 里有没有 tool call,知道springai该调用谁**
+
+**ToolCall[..., type=function, name=getTimeByZoneId, arguments={"zoneId":"Asia/Manila"}]**
+
+```
+toolExecutionResult = this.toolCallingManager.executeToolCalls(prompt, response);
+```
+
+**第四步**
+
+**ToolCall交由 ToolCallingManager找到对应的 ToolCallback 执行工具**
+
+**ToolCallback = 工具说明 + 工具执行器**
+
+**ToolCallback 有两个实现(工具入口)**
+
+**第一个**
+
+**FunctionToolCallback**
+
+**多个 `builder(...)`，说明它是把不同函数式对象包装成工具**
+
+- **先把模型传来的 JSON 参数转成 Java 对象**
+- **再直接调用函数**
+
+**直接持有函数对象，执行时直接 `apply`**
+
+**它不是反射，而是函数式回调**
+
+**第二个**
+
+**MethodToolCallback**
+
+```
+result = this.toolMethod.invoke(this.toolObject, methodArguments);
+```
+
+- **持有对象和方法,执行时 Method.invoke(...)**
+- **`FunctionToolCallback` 走函数式回调，`MethodToolCallback` 走反射调用**
+- **统一成 `ToolCallback`，所以调度方式是一致的**
+
+**第五步**
+
+**工具执行完，把结果交回给 AI Model**
+
+**模型结合工具结果，生成最终 Chat Response**
 
 ## MCP
 

@@ -1906,7 +1906,7 @@ flowchart TD
 
 - **真正执行的是你的程序或框架，比如 LangChain4j / Spring AI**
 
-
+### 如何定义
 
 ### 方法转成工具
 
@@ -1914,6 +1914,7 @@ flowchart TD
 @Configuration
 public class FunctionCallConfiguration {
     @Bean
+   
     @Description("根据用户输入的时区获取该时区的当前时间")
     public Function<TimeService.Request, TimeService.Response> getTimeFunction(TimeService timeService) {
         return timeService::getTimeByZoneId;
@@ -1921,11 +1922,12 @@ public class FunctionCallConfiguration {
 }
 ```
 
-Function的定义，他有两个泛型类型参数，分别是T和R
+-  **@Description 告诉模型这个函数能干什么。定义的是工具；**
 
-T表示这个function的入参，R表示出参
+- **Function的定义，他有两个泛型类型参数，分别是T和R**
+- **T表示这个function的入参，R表示出参**
 
-需要增加一个清晰的描述，讲清楚这个Function是干什么的，这样才能让模型更好的知道什么时候可以调用这个工具。
+- **需要增加一个清晰的描述，讲清楚这个Function是干什么的，这样才能让模型更好的知道什么时候可以调用这个工具。**
 
 ```
 @Service
@@ -1938,8 +1940,6 @@ public class TimeService {
         return new Response(zonedDateTime.format(formatter));
     }
 
-
-
 public record Request(
 @JsonProperty(required = true, value="zoneId")
 @JsonPropertyDescription("时区，比如 Asia/Shanghai") 
@@ -1951,7 +1951,9 @@ String zoneId) {}
 
 ```
 
-
+- **工具的逻辑：模型传入"zoneId": "Asia/Shanghai"**
+-  **ZoneId zid = ZoneId.of(request.zoneId);**
+-  **ZonedDateTime zonedDateTime = ZonedDateTime.now(zid);**
 
 ```
 @RestController
@@ -1970,8 +1972,7 @@ public class FunctionCallController {
         log.info("chat request => {}", query);
 
         return chatClient.prompt().toolNames("getTimeFunction").user(query).call().content();
-//        return chatClient.prompt()
-.tools(new TimeTools()).user(query).call().content();
+
     }
 
     @PostConstruct
@@ -1985,14 +1986,31 @@ public class FunctionCallController {
 }
 ```
 
+```
+用户请求 /function/chat?query=上海现在几点
+-> Controller 收到 query
+-> chatClient.prompt() 创建一次提示词请求
+-> toolNames("getTimeFunction") 告诉模型可以用这个函数
+-> user(query) 放入用户问题
+-> call() 发起模型调用
+-> 模型决定调用 getTimeFunction
+-> Spring AI 执行 TimeService#getTimeByZoneId
+-> 工具返回当前时间
+-> 模型生成最终回答
+-> content() 取出文本结果返回前端
+```
+
 ### 自定义工具
 
-**定义一个工具给LLM用的话，可以直接借助@Tool 注解**
-
-用@Tool把一个方法声明一个工具，用@ToolParam 来定义每个参数的描述。
+- **定义一个工具给LLM用的话，可以直接借助@Tool 注解**
+- **用@Tool把一个方法声明一个工具，用@ToolParam 来定义每个参数的描述。**
 
 ```
+@Component
 public class TimeTools {
+	@Autowired
+    private TimeService timeService;
+		
     @Tool(name = "getTimeByZoneId", description = "Get time by zone id")
     public String getTimeByZoneId(@ToolParam(description = "Time zone id, such as Asia/Shanghai") String zoneId) 
     {
@@ -2006,7 +2024,11 @@ public class TimeTools {
 ```
 
 - **方法转工具.toolNames("getTimeFunction")调用此方法**
-- **自定义工具.tools(newTimeTools())调用用此方法**
+- **自定义工具.tools(new  TimeTools())调用用此方法**
+
+**@Service 写真正逻辑交由Spring管理，不代表是AI工具**
+
+**@Bean Function/@Tool 把它注册成 AI 工具**
 
 ### 自动执行
 
@@ -2097,21 +2119,1087 @@ result = this.toolMethod.invoke(this.toolObject, methodArguments);
 
 ## MCP
 
-本质：
+### 初识
 
 让Agent能接外部世界,**协议**就能实现一些api调用
 
-比如：
+无需重复造轮子
 
 - 查天气
 - 调交易系统
 - 调音乐生成服务
 
+![image.webp](https://img.f3f3.top/picgo/1787533336936_image.webp)
+
+**区别**
+
+- **Function Call 本质上是一种 “硬编码式集成”**。每次的工具集成，都是一次完整的开发，不可避免的就回重复造轮子、强耦合。
+- **Mcp**以独立的 MCP Server 暴露能力；Client 负责通过 JSON-RPC 与 Server 进行能力协商与通信扩展性
+
+![image.webp](https://img.f3f3.top/picgo/1787533790987_image.webp)
+
+### 工作流程
+
+![image.webp](https://img.f3f3.top/picgo/1787533932966_image.webp)
+
+**初始化（工具说明获取）** 
+
+- 智能体初始化的时候，会通过 MCP 协议向所有连接的 MCP Server 使用**JSON-RPC** 协议请求工具说明书。
+- MCP Server 负责提供并确保这些说明书是**标准化的JSON格式**。
+
+**第二阶段：决策（大模型规划）** 
+
+- 将用户的原始问题和获取到的所有标准化工具说明，发送给大模型。
+- 大模型根据这些信息进行规划，并返回一个清晰的**工具调用指令**。
+
+**第三阶段：调用（执行与结果回传）** 
+
+- 通过 **MCP 协议**请求对应的 **MCP Server 执行工具**操作。
+- MCP Server 完成实际的工具逻辑（如数据库查询），并将**原始执行结果**返回给智能体。
+
+**第四阶段：总结（生成最终回复）**
+
+-  将用户原始问题+工具执行的**最终结果**+完整的对话历史，再次发回给大模型。
+- 大模型基于这个结果进行总结，生成一段自然语言回复，输出给用户。
+
+**Function Call 需要由应用自行构造工具说明并封装工具实现逻辑，**
+
+**MCP 将工具说明与工具执行逻辑都封装成独立的外部服务**
+
+### 技术原理
+
+智能体作为**客户端**，向外部的 **MCP Server** 去请求能力；工具不再属于智能体，而属于**独立的 Server**
+
+它不是一个 SDK，也不是一个框架，而是一种协议约定
+
+MCP 的本质是一种能力协商标准，而不是一种调用技术
+
+**client 和 server 是一对一的，而 host 中则可以接入多个 client 用于实现智能体的能力扩展**。
+
+MCP 则是由两层标准化组成：
+
+**数据层**：
+
+- 用 **JSON-RPC 2.0** 统一所有交互格式
+
+- **智能体先 `initialize` 建立连接，再用 `tools/list` 获取工具说明书，最后用 `tools/call` 触发执行**
+
+- **如果工具列表变了，还会收到 `notifications/tools/list_changed`。这样一来，智能体不需要理解每个工具的内部实现，只要看统一描述就能发现、选择和调用**。
+
+- **所有工具都必须用统一的格式描述自己——包括工具名、使用说明、参数结构、返回格式等**
+
+**传输层**
+
+定义了客户端和服务器之间进行数据交换的通信机制和通道，包括特定于传输的连接建立、消息帧和授权。
+
+-   **Stdio**：本地进程间通信，最快，适合本地客户端和本地 Server。
+
+-   **SSE**：旧的远程方案，服务端可以推消息，但读写分离，比较笨重。
+
+-   **Streamable HTTP**：新的主流方案，用一个 HTTP 端点支持流式双向通信，更适合现代云环境
+
+
+|             传输方式              | 技术原理                                                     | 传输特点                                                     | 核心优势                                                     | 典型应用场景                                              |
+| :-------------------------------: | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | --------------------------------------------------------- |
+|     **Stdio（标准输入输出）**     | 父子进程间通信，Host fork 子进程，数据通过 stdin/stdout 流动 | 下行：Host -> Server（stdin）<br>上行：Server -> Host（stdout）<br>错误：Server -> Host（stderr） | 生命周期绑定、无网络开销、延迟极低                           | 本地客户端（如 Cursor）、本地智能助手、高性能本地工具集成 |
+| **SSE（Server-Sent Events，旧）** | HTTP 长连接，Server 主动推送消息，Client 通过 POST 发送请求  | 接收通道：GET /sse，长连接<br>发送通道：POST /messages，短连接 | 可远程通信，支持服务端推送                                   | 远程工具调用，HTTP/1.1 环境下需服务端主动推送消息         |
+|     **Streamable HTTP（新）**     | HTTP POST 流式传输，JSON-RPC 数据分块发送                    | 单一连接：POST /mcp<br>Server 使用分块传输（Chunked Encoding）返回响应 | 简化架构、双向异步、资源效率高、易恢复、兼容标准 HTTP 基础设施 | 远程工具调用，替代 SSE，支持双向异步通知和流式结果        |
+
+### MCPServer
+
+#### Studio
+
+- **Stdio 模式通过标准输入输出与客户端通信**
+- **服务器启动后直接在控制台读写 JSON-RPC 消息，**
+- **适合本地轻量化工具或无需网络的场景，要求控制台输出完全干净，保证客户端能够正确解析消息。**  
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+</dependency>
+```
+
+- **要求你的程序运行时，控制台输出必须是纯 JSON（JSON-RPC）**
+- **不能有任何多余字符，所以必须关闭 web、关闭 banner、关闭所有日志输出。否则智能体只要解析 stdout 就会报错。**
+
+```
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+  ai:
+    mcp:
+      server:
+        name: mcp-server
+        version: 1.0.0
+        stdio: true
+        enabled: true
+        type: SYNC
+
+logging:
+  level:
+    root: OFF
+```
+
+**工具类**
+
+**把工具定义和执行逻辑放到同一个方法上**
+
+```
+@Service
+public class WeatherService {
+
+    @Tool(description = "根据城市名称查询天气信息")
+    public String getWeather(String city) {
+        if (city == null) {
+            return "请提供城市名称";
+        }
+        return switch (city) {
+            case "北京" -> "北京: 晴, 25°C";
+            case "上海" -> "上海: 多云, 22°C";
+            case "深圳" -> "深圳: 小雨, 28°C";
+            default -> city + ": 下雪, -20°C";
+        };
+    }
+}
+```
+
+**将MCP工具注入到ToolCallbackProvider之中**
+
+```
+@Bean
+public ToolCallbackProvider weatherTools(WeatherService weatherService) {
+    // 自动扫描 WeatherService 中带有 @Tool 注解的方法
+    return MethodToolCallbackProvider.builder()
+    .toolObjects(weatherService).build();
+}
+```
+
+**在Cline中配置 java jar 启动**
+
+```
+{  "mcpServers": {    
+"weather-stdio": {     
+"disabled": false,      "timeout": 60,      
+"type": "stdio",      "command": "java",      
+"args": [        "-jar",        "D:\\LLMentor\\LLMentor\\mcp\\mcp-server-stdio\\target\\mcp-server-stdio-1.0.0-SNAPSHOT.jar"      ]    }  }}
+```
+
+#### HttpSSE
+
+SSE（Server-Sent Events）模式基于 HTTP，采用**双端点架构**
+
+- **sse-message-endpoint 是 MCP Client 用来向服务器发送请求、调用工具的接口，客户端通过约定的 JSON-RPC 协议将参数传入并获取响应。**
+- **sse-endpoint 是 MCP Client 用来监听服务器主动推送消息的通道，比如工具列表更新、状态变更等。**
+- **二者配合构成了 MCP SSE 的核心通信机制，使客户端既能主动发起操作，也能实时接收服务器推送的变化，实现双向互动和高效协作**
+
+```
+server:
+  port: 8003
+
+spring:
+  application:
+    name: mcp-weather-sse
+  ai:
+    mcp:
+      server:
+        enabled: true
+        name: weather-sse-server
+        version: 1.0.0
+        type: SYNC
+        capabilities:
+          tool: true
+          resource: false
+          prompt: false
+          completion: false
+        sse-message-endpoint: /mcp/messages   # 客户端发送消息的HTTP endpoint ("写信发消息")
+        sse-endpoint: /sse                    # 客户端订阅SSE的endpoint （"听收音机"）
+
+```
+
+**通过localhost:8003/sse返回响应数据以json**
+
+```
+id:aef80411-4d14-4d18-b8d4-74b1017a69f6
+event:endpoint
+data:/mcp/messages?sessionId=aef80411-4d14-4d18-b8d4-74b1017a69f6
+```
+
+- **/mcp/messages?sessionId=aef80411-4d14-4d18-b8d4-74b1017a69f6**
+- **利用这个地址发送消息，8003:sse才能响应请求**
+
+**进行初始化**
+
+```
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "roots": {
+        "listChanged": true
+      },
+      "sampling": {},
+      "elicitation": {}
+    },
+    "clientInfo": {
+      "name": "ExampleClient",
+      "title": "Example Client Display Name",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+**告诉客户端已完备**
+
+```
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+```
+
+**获取工具说明书**
+
+```
+{
+  "jsonrpc": "2.0",
+  "method": "tools/list",
+  "params": {},
+  "id": 100
+}
+```
+
+**执行工具**
+
+```
+
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "get_weather",
+    "arguments": {
+      "city": "Beijing"
+    }
+  },
+  "id": 101
+}
+```
+
+#### StreamHttp
+
+**单一 HTTP 端点**实现请求发送与流式响应接收，支持 **断续重连和未确认消息重发**，
+
+```
+server:
+  port: 8004
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
+
+spring:
+  application:
+    name: mcp-weather-streamable
+  ai:
+    mcp:
+      server:
+        ## 这个地方改成STATELESS，就是无状态模式
+        protocol: STREAMABLE
+        name: streamable-mcp-server
+        version: 1.0.0
+        type: SYNC
+        ###定义 MCP Server 的提示词，指导模型行为
+        instructions: "这个服务是用来查询城市天气的。"
+        resource-change-notification: true
+        tool-change-notification: true
+        prompt-change-notification: true
+        streamable-http:
+        ####一个端口就可以实现双向通信
+          mcp-endpoint: /api/mcp
+         ####保证长连接稳定。
+          keep-alive-interval: 30s
+```
+
+**无状态**
+
+- **在内存中保存客户端会话，也不会分配或要求 Mcp-Session-Id**
+- **每个请求都是独立处理的，服务器不会记录多轮对话历史或流式事件状态**
+- **适合单次调用，纯POST请求，而不是SSE请求来调用**
+
+**有会话**
+
+先初始化可能返回SSE 流或者普通的 JSON 响应，Header里设置text/event-stream,application/json
+
+响应：Mcp-Session-Id用于记忆。以后
+
+Spring AI 的mcp server同样支持pojo类作为入参和出参。
+
+```
+@Tool(
+    name = "query_weather_by_city&date",
+    description = "根据城市和日期获取天气信息"
+)
+public WeatherResponse queryWeather(WeatherRequest request) {
+    try {
+        // 模拟调用api
+        Thread.sleep(10000);
+    } catch (InterruptedException e) {
+        throw new RuntimeException(e);
+    }
+    double temp = Math.random() * 15 + 10;
+    return new WeatherResponse(
+        request.getCity(),
+        request.getDate(),
+        request.getI(),
+        request.getS(),
+        "晴朗，有微风",
+        temp
+    );
+```
+
+```
+@Data
+public class WeatherRequest {
+    @ToolParam(description = "城市")
+    private String city;
+
+    @ToolParam(description = "日期")
+    private String date;
+
+    @ToolParam(description = "区县")
+    private String i;
+
+    @ToolParam(description = "街道")
+    private String s;
+}
+```
+
+**@ToolParam 来说明参数的值**
+
+### MCPClient
+
+#### 配置
+
+**传统web项目直接无脑用 webmvc 即可，追求响应式编程的可以使用 webflux二选一**
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-starter-mcp-client</artifactId>
+</dependency>
+```
+
+```
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-mcp-client-webflux</artifactId>
+</dependency>
+```
+
+```
+spring:
+  ai:    
+    mcp:
+      client:
+        enabled: true
+        #开启 MCP 客户端自动装配
+        name: my-mcp-client
+        version: 1.0.0
+        request-timeout: 60s
+        type: SYNC
+        #同步客户端
+        stdio:
+          connections:
+            weather-stdio:
+              command: java
+              args:
+                - -jar
+                - "D:\\LLMentor\\LLMentor\\mcp\\mcp-server-stdio\\target\\mcp-server-stdio-1.0.0-SNAPSHOT.jar"
+        sse:
+          connections:
+            weather-sse:
+              url: http://127.0.0.1:8003
+              sse-endpoint: /sse
+        streamable-http:
+          connections:
+            weather-streamable:
+              url: http://127.0.0.1:8004/stream/test/
+              endpoint: api/mcp
+
+```
+
+- **spring.ai.mcp.client.enabled: true 开启 MCP 客户端自动装配**
+- **type: SYNC 说明这里要的是同步客户端**
+
+#### 自动注入
+
+##### McpSync
+
+- **Spring Boot 读取 spring.ai.mcp.client.***
+- **自动创建对应的 MCP 传输层和 McpSyncClient**
+- **初始化时和 Server 做握手，拿到 server info 和工具清单**
+- **Spring 把这些客户端收集起来，供你注入 List<McpSyncClient>`或 `SyncMcpToolCallbackProvider`**
+- **`SyncMcpToolCallbackProvider` 再把工具包装成 `ToolCallback[]`**
+- **`ChatClient` 通过这些 callback 间接调用 MCP 工具**
+
+```
+ public McpSchema.CallToolResult callTool(String type) {
+        String toolName = "getWeather";
+       #### 工具参数
+        Map param = new HashMap();
+        param.put("city", "北京");
+        
+      ####遍历List<McpSyncClient>里面是客户端（Serverinfo和工具清单）
+        for (McpSyncClient client : mcpSyncClients) {
+        
+       ####### 识别当前连的是哪个 server
+            McpSchema.Implementation clientInfo = client.getClientInfo();
+            McpSchema.Implementation serverInfo = client.getServerInfo();
+            log.info("clientInfo: {}", JSON.toJSONString(clientInfo));
+            log.info("serverInfo: {}", JSON.toJSONString(serverInfo));
+            
+            
+            try {
+                if (clientInfo.title().contains(type)) {
+                    log.info("开始调用mcp服务");
+                    
+                    ########组装 CallToolRequest
+                    McpSchema.CallToolRequest request = McpSchema.CallToolRequest.builder().name(toolName).arguments(param).build();
+                    
+                    ######直接 client.callTool(request)
+                    McpSchema.CallToolResult result = client.callTool(request);
+                    log.info("callTool result: {}", result);
+                    return result;
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+        return null;
+    }
+```
+
+##### Chat
+
+- **SyncMcpToolCallbackProvider注入到chatclient中MCP接入**
+- **MCP 工具先被转换成 ToolCallback[]**
+- **`ChatClient` 构建时绑定这些工具.builder()**
+- **用户提问后，模型先判断要不要调用工具**
+- **如果要调用，Spring AI 代为执行 MCP 工具**
+- **工具结果再回灌给模型生成最终回答**
+
+```
+@Autowired
+private SyncMcpToolCallbackProvider toolCallbackProvider;
+
+@PostConstruct
+public void init() {
+里
+    ToolCallback[] toolCallbacks = toolCallbackProvider.getToolCallbacks();
+    this.chatClient = ChatClient.builder(chatModel)
+            .defaultToolCallbacks(toolCallbacks)
+            .build();
+}
+```
+
+### 原理
+
+**McpSyncClient是怎么来的**
+
+- **spring.ai.mcp.client.type=SYNC**
+- **触发 McpToolCallbackAutoConfiguration**
+- **里面构建 SyncMcpToolCallbackProvider**
+- **`McpSyncClient` 又来自 `McpClientAutoConfiguration`**
+- **具体 transport 由 `NamedClientMcpTransport` 组织**
+- **stdio / sse / streamable 各自有自己的自动配置去读 properties 并创建 transport**
 
 
 
+**SyncMcpToolCallbackProvider**
+
+- **SyncMcpToolCallbackProvider不是一个具体工具，而是一个工具提供者。**
+- **它内部可以管理多个 McpSyncClient，每个 McpSyncClient责连接一个 MCP Server**
+- **当 `ChatClient` 需要工具列表时，会调用 SyncMcpToolCallbackProvider#getToolCallbacks()`，`**
+- **Provider 就会遍历所有 MCP Client，分别调用 listTools()获取远程工具列表，**
+- **把每个远程工具都包装成一个 SyncMcpToolCallback**
 
 
+
+**SyncMcpToolCallback**
+
+- **SyncMcpToolCallback = 把 MCP Client 变成 Spring AI 工具的适配器**
+
+- **McpSyncClient = 真正连 MCP Server 的客户端**
+
+- **mcpClient.callTool(...) 调远程 MCP Server**
+
+- **ToolCallback = ChatClient 能识别的工具格式**
+
+  
+
+**SyncMcpToolCallbackProvider中的getToolCallbacks()**
+
+**getToolCallbacks()**
+
+- **读取已经初始化好的 McpSyncClient**
+- **为每个 client 生成一个 SyncMcpToolCallback**
+- **返回 ToolCallback[]**
+
+```
+@Autowired
+private SyncMcpToolCallbackProvider mcpTools;
+
+@Bean
+public ChatClient chatClient(ChatModel chatModel) {
+    return ChatClient.builder(chatModel)
+            .defaultTools(mcpTools)
+            .build();
+}
+```
+
+
+
+**ChatClient 调 MCP**
+
+**ChatClient.builder(chatModel).defaultTools(...)把工具注册进 DefaultChatClient**
+
+- **.call()或.stream()进入DefaultChatClient先构建 advisor chain**
+- ***ToolCallingAdvisor 自动接管工具循环***
+- **进入 OpenAiChatModel.internalCall()**
+- **先发一次模型请求**
+- **模型返回后，检查是否有 tool_calls**
+- **如果有，就进入工具执行流程**
+- **DefaultToolCallingManager.executeToolCalls()**
+- **从 toolcallback 的 toolmetadata 中获取这个 returnDirect的**
+- **最终会走到 toolCallback.call(...)**
+- **也就是又回到 SyncMcpToolCallback.call()**
+- **执行结果写回 `ToolResponseMessage**
+- **工具结果回灌给模型，必要时递归再问一次模型**
+
+```
+先问模型 -> 模型决定要不要调用工具 -> 框架执行工具 -> 工具结果回给模型 -> 模型组织最终回复
+```
+
+
+
+**为什么要递归？**
+
+- 只要工具结果，不需要总结
+- 工具执行完，还要模型把结果整理成自然语言
+
+**internalCall() 里会判断**
+
+- `returnDirect == true`：直接返回工具结果
+- 否则把 `conversationHistory` 拼回去，再递归调用模型
+
+### SSE重连
+
+**SSE 模式下 MCP Client 断线后不会自动恢复，要自己做一层重连机制**
+
+**McpSyncClient的ping()做心跳检测，失败后重新 buildClient() + initialize()，并且重建 ChatClient**
+
+- **项目启动的时候先初始化一次，如果初始化失败，就会启动一个后台重试线程，不停地尝试重新初始化。**
+- **利用一个定时任务，做心跳检测，可以每隔 5 秒 ping 一次 MCP Server。并且使用了原子标记，只会启动一个重试线程，不会出现重复创建多个任务的情况。**
+- **重试线程会一直循环重连，连成功了就自动停止。这样一来，无论是网络抖一下还是服务器重启，客户端都能自动恢复。**
+
+```
+@Service
+@Slf4j
+public class RetrySSEMcpServer {
+
+    @Autowired
+    private OpenAiChatModel chatModel;
+
+    private ChatClient chatClient;
+
+    private McpSyncClient sseClient;
+
+    // 是否正在重试 initialize（保证唯一性）
+    private final AtomicBoolean retrying = new AtomicBoolean(false);
+
+    // initialize 重试线程
+    private final ExecutorService retryExecutor = Executors.newSingleThreadExecutor();
+
+    @PostConstruct
+    public void init() {
+        log.info("Initializing SSE MCP Client...");
+
+        // 初始化 SSE Client
+        this.sseClient = buildClient();
+        
+			//调用 initialize() 和 MCP Server 建立会话
+        try {
+            this.sseClient.initialize();
+            log.info("SSE MCP client initialized.");
+        } catch (Exception e) {
+            log.error("Initial SSE initialize failed, will rely on retry thread.", e);
+            
+            // 启动重试线程
+            startRetryInitialize();
+        }
+
+        // 初始化 toolcallback(收集已初始化的 McpSyncClient)
+        SyncMcpToolCallbackProvider provider = SyncMcpToolCallbackProvider.builder()
+                .mcpClients(List.of(this.sseClient))
+                .build();
+			
+			
+			//把 MCP 工具转换成 ToolCallback
+        ToolCallback[] callbacks = provider.getToolCallbacks();
+
+        this.chatClient = ChatClient.builder(chatModel)
+                .defaultToolCallbacks(callbacks)
+                .defaultTools()
+                .build();
+    }
+```
+
+- **SyncMcpToolCallbackProvider 主要负责收集已初始化的 McpSyncClient**
+-  **getToolCallbacks() 时把这些客户端的工具能力转换成 ToolCallback，供 ChatClient 使用。**
+- **SSE Transport -> McpSyncClient -> SyncMcpToolCallbackProvider -> ToolCallback[] -> ChatClient**
+
+```
+
+    /**
+     * 定时任务：每 5 秒 ping 一次 SSE
+     * ping 不通则触发 initialize 重试线程
+     */
+    @Scheduled(fixedDelay = 5000)
+    public void pingSse() {
+        log.info("SSE MCP ping...");
+        if (sseClient == null) {
+            log.warn("SSE client not initialized yet.");
+            startRetryInitialize();
+            return;
+        }
+        try {
+            sseClient.ping();
+            log.debug("SSE MCP ping OK.");
+        } catch (Exception e) {
+            log.error("SSE MCP ping failed: {}", e.getMessage());
+            startRetryInitialize();
+        }
+    }
+        
+```
+
+**@EnableScheduling启动类添加**
+
+```
+      //客户端转为toolBack
+      
+    private McpSyncClient buildClient() {
+        HttpClientSseClientTransport transport = HttpClientSseClientTransport
+                .builder("http://127.0.0.1:8003")
+                .sseEndpoint("/sse")
+                .build();
+
+        return McpClient.sync(transport)
+                .clientInfo(new io.modelcontextprotocol.spec.McpSchema.Implementation("sse-client", "1.0"))
+                .requestTimeout(Duration.ofSeconds(10))
+                .build();
+    }
+    
+    //定时任务
+   
+    //启动 initialize 重试线程
+    // 是否正在重试 initialize（保证唯一性）
+    private final AtomicBoolean retrying = new AtomicBoolean(false);
+    
+    private void startRetryInitialize() {
+        // 保证只启动一个重试线程
+        if (!retrying.compareAndSet(false, true)) {
+            return;
+        }
+//只有第一个线程能把 retrying 从 false 改成 true，后面的全部直接返回。
+这样就保证同一时间只有一个重连任务。
+      
+      //单线程
+       retryExecutor.submit(() -> {
+            log.warn("Start retrying SSE MCP initialize...");
+
+            while (true) {
+                try {
+                    // 重建 sseClient
+                    this.sseClient = buildClient();
+                    this.sseClient.initialize();
+                    log.info("SSE MCP re-initialized successfully.");
+
+                    // chatclient 也同样需要重建
+                    SyncMcpToolCallbackProvider provider = SyncMcpToolCallbackProvider.builder()
+                            .mcpClients(List.of(this.sseClient))
+                            .build();
+
+                    ToolCallback[] callbacks = provider.getToolCallbacks();
+
+                    this.chatClient = ChatClient.builder(chatModel)
+                            .defaultToolCallbacks(callbacks)
+                            .defaultTools()
+                            .build();
+                            
+                    retrying.set(false);
+                    return;
+                } catch (Exception e) {
+                    log.warn("Retry initialize failed, will retry in 10s. Reason: {}", e.getMessage());
+                }
+                
+                try {
+                    Thread.sleep(10000);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
+
+    }
+
+    public String chat(String userMessage) {
+        return chatClient.prompt()
+                .user(userMessage)
+                .call()
+                .content();
+    }
+}
+```
+
+- **McpSyncClient需要重新初始化**，我们的Chatclient也同样需要初始化
+- ChatClient 内部的 ToolCallback **是在初始化时注入的**。
+- ToolCallback 绑定的 McpSyncClient 是旧的，会话已断开。即使你重新初始化了 sseClient，ChatClient 没有同步更新，仍然会继续调用旧的客户端。
+
+### 改为Https
+
+#### Server
+
+**HTTP 属于明文传输协议**
+
+**生成自签名CA证书**
+
+```
+//如果有重复生成，请先执行删除
+keytool -delete -alias local-ssl -keystore keystore.p12 -storepass 123456
+
+//生成p12服务器证书（包含公私钥）
+keytool -genkeypair -alias local-ssl -keyalg RSA -keysize 2048 -storetype PKCS12 -keystore keystore.p12 -validity 3650 -storepass 123456 -keypass 123456 -dname "CN=localhost, OU=Dev, O=Demo, L=Local, ST=Local, C=CN" -ext "SAN=IP:127.0.0.1,DNS:localhost" -ext "BasicConstraints=ca:true"
+```
+
+**会生成一个 keystore.p12 证书文件，我们将其放入到项目的resources**
+
+```
+server:
+  port: 8443
+  ssl:
+    key-store: classpath:keystore.p12
+    key-store-password: 123456
+    key-store-type: PKCS12
+    key-alias: local-ssl
+    enabled: true
+```
+
+#### Client
+
+```
+public static void createSecureHttpsClient(String baseUrl, String endpoint, String caCertPath) {
+    try {
+        // 1. 加载 CA 证书
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        FileInputStream fis = new FileInputStream(caCertPath);
+        Certificate caCert = cf.generateCertificate(fis);
+        fis.close();
+
+        // 2. 创建 KeyStore 并导入 CA
+        KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+        ks.load(null, null);
+        ks.setCertificateEntry("caCert", caCert);
+
+        // 3. 构建 TrustManagerFactory
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(ks);
+
+        // 4. 创建 SSLContext
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, tmf.getTrustManagers(), new java.security.SecureRandom());
+
+        // 5. 使用默认 Hostname 验证
+        HttpClient.Builder httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(30))
+                .sslContext(sslContext);
+
+        // 6. 构建 SSE Transport
+        HttpClientSseClientTransport transport = HttpClientSseClientTransport.builder(baseUrl)
+                .sseEndpoint(endpoint)
+                .clientBuilder(httpClient)
+                .build();
+
+        // 7. 初始化 MCP Client
+        McpSyncClient mcp = McpClient.sync(transport).build();
+        mcp.initialize();
+        System.out.println("生产环境 MCP Client 初始化成功");
+
+    } catch (Exception e) {
+        throw new RuntimeException("创建 Secure MCP Client 失败", e);
+    }
+}
+```
+
+```
+keytool -exportcert -alias local-ssl -keystore keystore.p12 -storetype PKCS12 -storepass 123456  -rfc -file mcp-server.crt
+```
+
+### 实现鉴权
+
+**传输安全**和**访问控制**。
+
+- **传输安全**：通过 HTTPS 确保数据在传输过程中不被窃取或篡改。
+- **访问控制**：通过认证和鉴权机制（如请求头携带 **Bearer Token**），防止工具被任意调用。
+
+**本地服务通过环境变量 KEY 来区分访问权限，远程服务可能会重复覆盖**
+
+- **服务端用 Spring 拦截器校验 `Authorization` 请求头，**
+- **客户端通过 MCP Transport 的 `requestBuilder` 给请求加上 `Authorization: Bearer xxx`，这样远端 MCP 的 SSE 或 Streamable 通信就能沿用传统 Web 服务的 token 认证机制。**
+
+### context-path
+
+- **本质上就是改访问入口路径**
+- **`context-path` 会改变服务端真实访问路径，而 MCP Client 在拼接 `baseUrl + endpoint` 时非常依赖斜杠规则。多一个 `/` 或少一个 `/`，最终 URL 就可能被拼错，导致 `404`**
+
+```
+context-path: /stream/test
+```
+
+```
+HttpClientStreamableHttpTransport transport =
+    HttpClientStreamableHttpTransport.builder("http://127.0.0.1:8004/stream/test/")
+        .endpoint("api/mcp")
+        .build();
+```
+
+**Client 端 baseUrl 以 / 结尾，endpoint 不以 /`开头**
+
+```
+server:
+  servlet:
+    context-path: /test
+
+spring:
+  ai:
+    mcp:
+      server:
+        protocol: SSE
+        sse-endpoint: /sse
+        sse-message-endpoint: /mcp/messages
+        base-url: /test
+```
+
+**SSE + context-path:建议加 base-url**
+
+### 跳过工具结果总结
+
+多智能体协作
+
+![image.webp](https://img.f3f3.top/picgo/1787704830023_image.webp)
+
+**只需要获取到结果就好，在最终总结的时候，将这些中间结果一起抛给最后一个总结智能体中**
+
+**returnDirect**
+
+```
+@Tool(description = "根据城市名称查询天气信息",returnDirect = true)
+public String getWeather(String city) {
+    if (city == null) {
+        return "请提供城市名称";
+    }
+    return switch (city) {
+        case "北京" -> "北京: 晴, 25°C";
+        case "上海" -> "上海: 多云, 22°C";
+        case "深圳" -> "深圳: 小雨, 28°C";
+        default -> city + ": 下雪, -20°C";
+    };
+}
+```
+
+- **DefaultToolCallingManager** 的 **executeToolCall** 方法
+- **从 toolcallback 的 toolmetadata 中获取这个 returnDirect的**
+
+![image.webp](https://img.f3f3.top/picgo/1787706127300_image.webp)
+
+接口toolcallback实现类SyncMcpToolCallback和Function Call 
+
+- **ToolCallback默认元数据里 returnDirect` 是 `false**
+- **SyncMcpToolCallback 没有把 MCP Server 端的这个配置传回来**
+- **所以 `DefaultToolCallingManager` 看到的还是 `false`**
+
+**MCP 场景下，`returnDirect` 目前不生效；但传统 Function Call 场景是可以生效的。**
+
+```
+        this.chatClient = ChatClient.builder(chatModel)
+//                .defaultToolCallbacks(callbacks)
+                .defaultTools(new WeatherService())
+                .build();
+```
+
+**如果你想让 MCP 也跳过总结，就得自己继承并改造：**
+
+- SyncMcpToolCallback
+- SyncMcpToolCallbackProvider
+
+![image.webp](https://img.f3f3.top/picgo/1787707344577_image.webp)
+
+```
+public class ReturnDirectSyncMcpToolCallback extends SyncMcpToolCallback {
+
+    private final boolean returnDirect;
+
+    public ReturnDirectSyncMcpToolCallback(McpSyncClient client, McpSchema.Tool tool, boolean returnDirect) {
+        super(client, tool);
+        this.returnDirect = returnDirect;
+    }
+
+    @Override
+    public ToolMetadata getToolMetadata() {
+        return ToolMetadata.builder()
+                .returnDirect(returnDirect)
+                .build();
+    }
+}
+```
+
+```
+@Slf4j
+public class DirectReturnMcpToolCallbackProvider extends SyncMcpToolCallbackProvider {
+
+    private final List<McpSyncClient> mcpClients;
+    private boolean returnDirect;
+
+    public DirectReturnMcpToolCallbackProvider(List<McpSyncClient> mcpClients, boolean returnDirect) {
+        super(mcpClients);
+        this.mcpClients = mcpClients;
+        this.returnDirect = returnDirect;
+    }
+
+    @Override
+    public ToolCallback[] getToolCallbacks() {
+        var toolCallbacks = new ArrayList<>();
+
+        for (McpSyncClient mcpClient : mcpClients) {
+            List<McpSchema.Tool> toolList = Collections.emptyList();
+
+            try {
+                toolList = mcpClient.listTools().tools();
+            } catch (Exception e) {
+                // 跳过该 MCP，继续处理其它的
+                continue;
+            }
+
+            for (var tool : toolList) {
+                toolCallbacks.add(new CustomSyncMcpToolCallback(mcpClient, tool, returnDirect));
+            }
+        }
+        var array = toolCallbacks.toArray(new ToolCallback[0]);
+        validateToolCallbacks(array);
+        return array;
+    }
+
+    private void validateToolCallbacks(ToolCallback[] toolCallbacks) {
+        List<String> duplicateToolNames = ToolUtils.getDuplicateToolNames(toolCallbacks);
+        duplicateToolNames.forEach(s -> log.info("tool name found: {}", s));
+        if (!duplicateToolNames.isEmpty()) {
+            throw new IllegalStateException(
+                    "Multiple tools with the same name (%s)".formatted(String.join(", ", duplicateToolNames)));
+        }
+    }
+}
+```
+
+```
+DirectReturnMcpToolCallbackProvider callbackProvider = new DirectReturnMcpToolCallbackProvider(clients,true);
+
+this.chatClient = ChatClient.builder(chatModel)
+       .defaultToolCallbacks(callbackProvider)
+       .build();
+```
+
+### 工具过滤
+
+MCP Server 往往会包含**大量工具**
+
+**SyncMcpToolCallbackProvider** 中就有这个 **McpToolFilter** 来控制要不要构建 **SyncMcpToolCallback**。
+
+**McpToolFilter 是继承于** **BiPredicate。**
+
+- **boolean test(T t, U u)**接收两个输入参数（类型 **T 和 U**），返回一个 **boolean** 值
+- 第一个参数是连接信息 McpConnectionInfo，第二个参数是具体工具 `McpTool`
+- 返回 `true`，工具保留 ，返回 false，工具就过滤
+
+Spring AI 这边的默认行为是全放行。
+
+```
+@Service
+@Slf4j
+public class WeatherService {
+
+    @Tool(name = "weatherQueryByCity", description = "根据城市名称查询天气信息")
+    public String getWeatherByCity(String city) {
+        if (city == null) return "请提供城市名称";
+        return switch (city) {
+            case "北京" -> "北京: 晴, 25°C";
+            case "上海" -> "上海: 多云, 22°C";
+            case "深圳" -> "深圳: 小雨, 28°C";
+            default -> city + ": 下雪, -20°C";
+        };
+    }
+
+    @Tool(name = "weatherForecast", description = "查询未来天气预报")
+    public String getWeatherForecast(String city) {
+        if (city == null) return "请提供城市名称";
+        return city + ": 明天多云，后天有小雨。";
+    }
+
+    @Tool(name = "weatherAlert", description = "获取城市天气预警信息")
+    public String getWeatherAlert(String city) {
+        if (city == null) return "请提供城市名称";
+        return city + ": 暴雨黄色预警，注意安全。";
+    }
+
+
+    @Tool(name = "climateIndex", description = "查询城市气候指数")
+    public String getClimateIndex(String city) {
+        return city + ": 舒适度 72/100，相对湿度 65%。";
+    }
+}
+```
+
+- ，**给工具增加name属性**
+- **其中3个方法的name以weather打头，另外一个方法则不是，用于区分过滤效果。**
+
+```
+HttpClientStreamableHttpTransport streamableTransport = HttpClientStreamableHttpTransport.builder("http://127.0.0.1:8004/stream/test/").endpoint("api/mcp").build();
+McpSyncClient streamableClient = McpClient.sync(streamableTransport)
+        .clientInfo(new io.modelcontextprotocol.spec.McpSchema.Implementation("streamable-client", "1.0"))
+        .requestTimeout(Duration.ofSeconds(10))
+        .build();
+streamableClient.initialize();
+
+List<McpSyncClient> clients = List.of(streamableClient);
+
+SyncMcpToolCallbackProvider provider =
+        SyncMcpToolCallbackProvider.builder()
+            .mcpClients(clients)
+            // 关键过滤方法
+            .toolFilter((conn, tool) -> tool.name().startsWith("weather"))
+            .build();
+
+ToolCallback[] callbacks = provider.getToolCallbacks();
+
+this.chatClient = ChatClient.builder(chatModel)
+        .defaultToolCallbacks(callbacks)
+        .build();
+```
 
 ## RAG
 
@@ -2127,72 +3215,332 @@ result = this.toolMethod.invoke(this.toolObject, methodArguments);
 
 - **无法实时更新**
 
-- **LLM的知识停留在训练时刻，无法回答私有领域问题。RAG通过检索外部知识库为LLM补充实时、精准的上下**
-  **文，使其回答有据可依。**
+- **LLM的知识停留在训练时刻，无法回答私有领域问题。RAG通过检索外部知识库为LLM补充实时、精准的上下文，使其回答有据可依。**
 
-### RAG流程
+### 构建索引
 
-### 数据准备阶段
+#### 预处理文档
 
-![image.webp](https://img.f3f3.top/picgo/1784437815123_image.webp)
+**让后续的“分片”和“向量化”能够在干净的数据上进行，从源头上保证知识库索引的质量。**
+
+##### 文档读取![image.webp](https://img.f3f3.top/picgo/1784437815123_image.webp)
 
 ![image.webp](https://img.f3f3.top/picgo/1784437961368_image.webp)
 
-**RAG 的过程：** 把问题转成语义向量；
+ **DocumentReader** 是一个用于从各种格式的文档中提取文本内容并将其转换为 Document 对象的核心组件。Document 对象随后可以被用于向量嵌入（embedding）、语义搜索、RAG：
 
-使用嵌入模型把每个文本片段转换成一组数字
+**统一读取接口**：提供标准化方式从不同来源（如 PDF、Word、TXT、HTML、Markdown 等）加载原始文本。
 
-- 在知识库中检索最相关的文档片段；
+**结构化输出**：将原始内容封装为 `org.springframework.ai.document.Document` 对象，包含：
 
-- 将这些片段拼进提示词（Prompt）；
+- content：文档的文本内容
+- `metadata：元数据（如文件名、页码、来源 URL、创建时间等）
+- **支持扩展**：开发者可自定义实现特定格式的解析器。
 
-- 模型基于这些真实资料生成答案。
+**调用read/get方法，就能得到一个Document的List**
 
-完整的RAG应用流程主要包含两个阶段：
-
-- 数据准备阶段：数据提取——>文本分割——>向量化
-  （embedding）——>数据入库
-- 应用阶段：用户提问——>数据检索（召回）——>注入Prompt
-  ——>LLM生成答案
-
-**数据召回**将问题也转换成向量，然后在向量数据库中找到语义最相关的若干文本片段。
-
-**注入Prompt**检索到的资料与用户问题一起交给大语言模型
-
-![image.webp](https://img.f3f3.top/picgo/1784420729791_image.webp)
-
-#### **数据提取**
-
-- 数据提取
-
-- 数据加载：包括多格式数据加载、不同数据源获取等，根据数据自身情况，将数据处理为同一个范式。
-
-- 数据处理：包括数据过滤、压缩、格式化等。
-
-- 元数据获取：提取数据中关键信息，例如文件名、Title、时间等。
+##### 接口
 
 ```
-#示例：文档预处理代码
-def preprocess_document(doc):
-    # 1. 移除多余的空格和换行
-    doc = re.sub(r'\s+', ' ', doc)
-    # 2. 提取纯文本（从PDF、HTML等）
-    if doc_type == 'pdf':
-        text = extract_text_from_pdf(doc)
-    # 3. 规范化格式
-    text = text.strip().lower()
-    # 4. 去除无用信息（页眉、页脚等）
-    text = remove_headers_footers(text)
-    return text
+public interface DocumentReaderStrategy {
+    //判断是否支持该文件
+    boolean supports(File file);
+
+    //读取文件并返回 Document 列表
+    List<Document> read(File file) throws IOException;
+}
+```
+
+**文本**
+
+```
+
+public class TextReaderStrategy implements DocumentReaderStrategy {
+
+    @Override
+    public boolean supports(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".txt") || name.endsWith(".tex") || name.endsWith(".text");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        Resource resource = new FileSystemResource(file);
+        return new TextReader(resource).get();
+    }
+}
+```
+
+Resource — jakarta.annotation.Resource（注解）≠ org.springframework.core.io.Resource（Spring 资源）。
+
+Document — javax.swing.text.Document（Swing 画图组件≠org.springframework.ai.document.Document
+
+**Json**
+
+```
+@Component
+public class JsonReaderStrategy implements DocumentReaderStrategy {
+
+    public boolean supports(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".json");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        Resource resource = new FileSystemResource(file);
+        // 假设目标提取json的两个字段description和content
+        JsonReader jsonReader = new JsonReader(resource, "description", "content");
+        return jsonReader.get();
+    }
+}
+```
+
+**pdf**
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-pdf-document-reader</artifactId>
+  <version>1.1.0</version>
+
+</dependency>
+```
+
+- **两个reader：ParagraphPdfDocumentReader、PagePdfDocumentReader**
+- **区别是PagePdfDocumentReader 是“按页切分”，而 ParagraphPdfDocumentReader是“按语义段落切分**
+
+```
+@Component
+public class PdfReaderStrategy implements DocumentReaderStrategy {
+    @Override
+    public boolean supports(File file) {
+        return file.getName().toLowerCase().endsWith(".pdf");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        // 读取配置
+        PdfDocumentReaderConfig config = PdfDocumentReaderConfig.builder()
+                .withPageTopMargin(50)         // 忽略顶部50个单位的页眉
+                .withPageBottomMargin(50)      // 忽略底部50个单位的页脚
+                .withPagesPerDocument(1)       // 每一页作为一个 Document
+                .withPageExtractedTextFormatter(new ExtractedTextFormatter.Builder()
+                        .withNumberOfTopTextLinesToDelete(0) // 每页再额外删掉前0行
+                        .build())
+                .build();
+
+        Resource resource = new FileSystemResource(file);
+        return new PagePdfDocumentReader(resource, config).get();
+    }
+}
+```
+
+**html**
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-jsoup-document-reader</artifactId>
+ <version>1.1.0</version>
+
+</dependency>
+```
+
+```
+@Component
+public class HtmlReaderStrategy implements DocumentReaderStrategy {
+
+    @Override
+    public boolean supports(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".html") || name.endsWith(".htm");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        // 读取配置
+        JsoupDocumentReaderConfig config = JsoupDocumentReaderConfig.builder()
+                // 只提取p标签段落
+                .selector("p")
+                // 文件编码
+                .charset("UTF-8")
+                // 包含超链接
+                .includeLinkUrls(true)
+                // 提取meta标签的元数据
+                .metadataTags(List.of("author", "date"))
+                // 添加自定义元数据
+                .additionalMetadata("filename", file.getName())
+                .build();
+        Resource resource = new FileSystemResource(file);
+        return new JsoupDocumentReader(resource, config).get();
+    }
+```
+
+**Markdown**
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-markdown-document-reader</artifactId>
+  <version>1.1.0</version>
+
+</dependency>
+```
+
+```
+public class MarkdownReaderStrategy implements DocumentReaderStrategy {
+
+    @Override
+    public boolean supports(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".md");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        // 读取配置
+        MarkdownDocumentReaderConfig config = MarkdownDocumentReaderConfig.builder()
+                // 水平线分割生成新文档
+                .withHorizontalRuleCreateDocument(true)
+                // 不包含代码块
+                .withIncludeCodeBlock(false)
+                // 不包含引用
+                .withIncludeBlockquote(false)
+                // 添加文件名元数据
+                .withAdditionalMetadata("filename", file.getName())
+                .build();
+        Resource resource = new FileSystemResource(file);
+        return new MarkdownDocumentReader(resource, config).get();
+    }
+}
+```
+
+**pdf,ppt,word读取**
+
+```
+  <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-tika-document-reader</artifactId>
+            <version>1.1.0</version>
+
+        </dependency>
+```
+
+```
+public class TikaReaderStrategy implements DocumentReaderStrategy {
+
+    @Override
+    public boolean supports(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".doc") || name.endsWith(".docx");
+    }
+
+    @Override
+    public List<Document> read(File file) throws IOException {
+        Resource resource = new FileSystemResource(file);
+        return new TikaDocumentReader(resource).get();
+    }
+}
+
+```
+
+##### 文档清洗
+
+```
+@GetMapping("/read")
+public List<Document> readDocument(@RequestParam("path") String path) {
+    File file = new File(path);
+    if (!file.exists() || !file.isFile()) {
+        throw new IllegalArgumentException("文件不存在或不是有效文件: " + path);
+    }
+    try {
+
+        List<Document> documents = selector.read(file);
+        
+        return cleanDocuments(documents);
+    
+    } catch (IOException e) {
+        throw new RuntimeException("读取文件失败: " + e.getMessage(), e);
+    }
+}
+
+/**
+ * 文本清洗
+ */
+public List<Document> cleanDocuments(List<Document> documents) {
+    if (CollectionUtils.isEmpty(documents)) {
+        return documents;
+    }
+
+    return documents.stream()
+    .map(doc -> {
+        if (doc == null || doc.getText() == null) {
+            return doc;
+        }
+
+        String text = doc.getText();
+
+        // 1. 去掉多余空白字符（空格、制表符、换行等）
+        text = text.replaceAll("\\s+", " ").trim();
+
+        // 2. 去掉无意义的乱码或特殊符号
+        text = text.replaceAll("[^\\p{L}\\p{N}\\p{P}\\p{Z}\\n]", "");
+
+        // 3. 可选：统一大小写
+        // text = text.toLowerCase();
+
+        // 4. 按换行拆分段落，去除重复段落
+        String[] paragraphs = text.split("\\n+");
+        Set<String> seen = new LinkedHashSet<>();
+        for (String para : paragraphs) {
+            String trimmed = para.trim();
+            if (!trimmed.isEmpty()) {
+                seen.add(trimmed);
+            }
+        }
+
+        text = String.join("\n", seen);
+
+        return new Document(text);
+    })
+    .collect(Collectors.toList());
+}
 ```
 
 #### **文本分割**
 
+**读取文件类型统一入口**
+
+```
+@Component
+public class DocumentReaderFactory {
+
+    @Autowired
+    private List<DocumentReaderStrategy> strategies;
+
+    public List<Document> read(File file) throws IOException {
+        for (DocumentReaderStrategy strategy : strategies) {
+            if (strategy.supports(file)) {
+                return strategy.read(file);
+            }
+        }
+        throw new IllegalArgumentException("不支持的文件类型: " + file.getName());
+    }
+}
+```
+
+- **Spring 会自动把所有实现了 DocumentReaderStrategy接口的 Bean 注入到 strategies`集合中。**
+- **当调用 `read(file)` 方法时，它会遍历所有读取策略。**
+- **每个策略通过 `supports(file)` 判断自己是否支持当前文件。**
+- **找到支持的策略后，就调用它的 `read(file)` 方法完成文件解析。**
+- **如果所有策略都不支持，就抛出异常，提示“不支持的文件类型**
+
+##### 文档切片
+
 **Chunking**
 
-是把长文档切成多个较小文本块，方便后续进行向量化、检索和生成答案。
-
-主要需要平衡两个因素：
+**把长文档切成多个较小文本块，方便后续进行向量化、检索和生成答案。**
 
 1. **Embedding 模型的 Token 限制**
    嵌入模型一次只能处理有限数量的 Token。文档超过限制时，必须先切分。
@@ -2200,35 +3548,47 @@ def preprocess_document(doc):
 1. **文本的语义完整性**
    每个文本块应尽量表达完整内容。切分位置不合理，会把相关信息拆散，降低检索结果的准确性。
 
-- 句分割：以“句”的粒度进行切分，保留一个句子的完整语义。常见切分符包括：句号、感叹号、问号、换行符等。
+**固定长度分割**：根据embedding模型的token长度限制，将文本分割为固定长度（例如256/512个tokens），这种切分方式会损失很多语义信息，一般通过在头尾增加一定冗余量来缓解。
 
-- 固定长度分割：根据embedding模型的token长度限制，将文本分割为固定长度（例如256/512个tokens），这种切分方式会损失很多语义信息，一般通过在头尾增加一定冗余量来缓解。
+- chunk_size：块中的字符数量
 
-- 段落
+- chunk_overlap: 顺序块中重叠的字符数。减少语义割裂
 
-- **llm**拆分
+TextSplitter 是所有文本拆分器的抽象基类
+
+TokenTextSplitter 会先将文本编码成模型的 token，然后根据设定的每块 token 数，把文本拆成多个长度适合模型上下文的小文本块。    
+
+SpringAI不支持overlap字段采用SpringAlibaba递归分块
+
+或是Langchin4j的语义分块
+
+- **递归分块**：以“句”的粒度进行切分，保留一个句子的完整语义。常见切分符包括：句号、感叹号、问号、换行符等。
 
 ```
-#每300个字符一块
-chunk_size = 300
-chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+RecursiveCharacterTextSplitter splitter = new RecursiveCharacterTextSplitter(100);
+List<String> chunks = splitter.splitText("""
+ 
+        """);
+
+chunks.forEach(System.out::println);
 ```
 
 ```
-#按句号、问号、感叹号分割
-import nltk
-sentences = nltk.sent_tokenize(text)
-段落分块（保留逻辑结构）
-#按换行符或段落标记分割
-chunks = text.split('\n\n')
-滑动窗口分块（带重叠，避免信息丢失）
-
-chunk_size = 300
-overlap = 50  # 重叠50字符
-chunks = []
-for i in range(0, len(text), chunk_size - overlap):
-    chunks.append(text[i:i+chunk_size])
+     //文档清洗
+     List<Document> allChunkedDocuments = DocumentCleaner.cleanDocuments(documents).stream()
+                .flatMap(document -> {
+       // 分块 
+       //Spring自定义分割器实现Overlap功能
+    OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(1000, 50);
+                    return splitter.split(document).stream();
+                })
+                .collect(Collectors.toList());
 ```
+
+**文档不能先清洗依赖这些特殊符号**
+
+- 文档分块
+- 语义分块
 
 <details>
 <summary>文本分割策略</summary>
@@ -2263,23 +3623,23 @@ for i in range(0, len(text), chunk_size - overlap):
 
 这是目前提升 RAG 效果最有效的手段之一（LlamaIndex 中叫 `ParentDocumentRetriever`）。
 
-- **痛点：**
+**痛点：**
 
-  - 切片**太小**：含有语义信息少，LLM 看不懂上下文。
-  - 切片**太大**：包含了太多噪音，向量检索不准（因为向量是取平均值的）。
+- 切片**太小**：含有语义信息少，LLM 看不懂上下文。
+- 切片**太大**：包含了太多噪音，向量检索不准（因为向量是取平均值的）。
 
-- **解决方案：“存大找小”。**
+**解决方案：“存大找小”。**
 
-  a. **切两刀：**
+a. **切两刀：                            **
 
-  - **小切片（Child Chunk）**：比如 128 Token。用来做 Embedding 和检索。
-  - **大切片（Parent Chunk）**：比如 1024 Token（包含那个小切片）。
+- **小切片（Child Chunk）**：比如 128 Token。用来做 Embedding 和检索。
+- **大切片（Parent Chunk）**：比如 1024 Token（包含那个小切片）。
 
-  b. **检索时**：用“小切片”去匹配用户的 Query（因为小切片语义聚焦，匹配最准）。
+b. **检索时**：用“小切片”去匹配用户的 Query（因为小切片语义聚焦，匹配最准）。
 
-  c. **给 LLM 时**：找到小切片后，**把它的“父切片”（整段话）**扔给 LLM。
+c. **给 LLM 时**：找到小切片后，**把它的“父切片”（整段话）**扔给 LLM。
 
-- **效果**：检索极其精准，同时 LLM 获得的上下文非常丰富。
+**效果**：检索极其精准，同时 LLM 获得的上下文非常丰富。
 
 用户问题****
    **↓**
@@ -2293,44 +3653,74 @@ for i in range(0, len(text), chunk_size - overlap):
 
 </details>
 
+**大分块不包含子分块**
+
+**父分块放到关系型数据库，子替换父，然后父分片的去重、查询的加速、以及如何替换等问题**
+
+- 我是一个完整的句子 ，id =5 ——> MySQL
+- 我是一个完 , parentChunkId = 5 ——> pgvector（代指pg的向量库）
+- 整的句子 , parentChunkId = 5——> pgvector
+
 #### **向量化**
+
+##### 初识
 
 **embedding**
 
-向量化是一个将文本数据转化为向量矩阵（一串数字）的过程，该过程会直接影响到后续检索的效果。
+- **向量化将文本数据转化为向量矩阵（一串数字）的过程，会直接影响到后续检索的效果。[0.1, 0.3, 0.5]**
+- **把文字转换成数字向量，相似的文字会得到相似的向量**
 
-把文字转换成数字向量，相似的文字会得到相似的向量
+##### 向量模型
+
+**SpringAI提供了EmbeddingModel接口**
+
+**DashScopeEmbeddingModel**
+
+```
+spring:
+  ai:
+    dashscope:
+      embedding:
+        options:
+          model: text-embedding-v4
+          dimensions: 768
+```
+
+**OpenAiEmbeddingModel**
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-starter-model-openai</artifactId>
+</dependency>
+```
+
+```
+spring:
+  ai:
+    openai:
+      embedding:
+        base-url: https://dashscope.aliyuncs.com/compatible-mode/
+        api-key: xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        options:
+          dimensions: 768
+          model: text-embedding-v4
+```
+
+向量化的过程本质上是对 List<Document> **遍历并执行 embed** 操作，最终得到一个 **List<float[]>**
+
+```
+public List<float[]> embed(List<Document> documents) {
+    if (CollectionUtils.isEmpty(documents)) {
+        return new ArrayList<>();
+    }
+
+    return documents.stream().map(doc -> openAiEmbeddingModel.embed(doc)).collect(Collectors.toList());
+```
 
 **ChatGPT-Embedding**
 
-ChatGPT-Embedding由OpenAI公司提供，以接口形式调用。
-
 https://platform.openai.com/docs/guides/embeddings/what-are-embeddings
-
-```
-#使用OpenAI的Embedding模型
-from openai import OpenAI
-client = OpenAI()
-
-text = "阿司匹林是一种解热镇痛药"
-response = client.embeddings.create(
-    model="text-embedding-3-small",
-    input=text
-)
-vector = response.data[0].embedding
-print(f"向量维度: {len(vector)}")  # 输出: 1536
-print(f"前5个值: {vector[:5]}")    # 输出: [0.023, -0.014, 0.089, ...]
-```
-
-```
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-
-vec1 = np.array([0.1, 0.3, 0.5])
-vec2 = np.array([0.12, 0.29, 0.51])
-similarity = cosine_similarity([vec1], [vec2])[0][0]
-print(f"相似度: {similarity:.3f}")  # 输出: 0.999（非常相似）
-```
 
 **ERNIE-Embedding V1**
 
@@ -2384,85 +3774,287 @@ https://huggingface.co/BAAI/bge-base-en-v1.5
 
 **为什么不用普通数据库？**
 
-普通数据库（MySQL、MongoDB）擅长精确查询："找ID=123的记录"。但向量搜索是**相似性查询**："找和[0.1, 0.3, 0.5]最相似的10个向量"。
+- **普通数据库（MySQL、MongoDB）擅长精确查询："找ID=123的记录"。但向量搜索是相似性查询："找和[0.1, 0.3, 0.5]最相似的10个向量"。**
+- **向量数据库用了特殊的索引算法（如HNSW、IVF），能在百万、千万级向量中毫秒级找到最相似的。**
 
-向量数据库用了特殊的索引算法（如HNSW、IVF），能在百万、千万级向量中毫秒级找到最相似的。
+- **数据向量化后构建索引，并写入数据库的过程可以概述为数据入库过程，适用于RAG场景的数据库包括：FAISS、Chromadb、ES、milvus等。**
 
-数据向量化后构建索引，并写入数据库的过程可以概述为数据入库过程，适用于RAG场景的数据库包括：FAISS、Chromadb、ES、milvus等。
+|  向量数据库   | 简介                                                   | 适用场景                                              | 特点                                                      |
+| :-----------: | ------------------------------------------------------ | ----------------------------------------------------- | --------------------------------------------------------- |
+|    Milvus     | 开源的分布式向量数据库，专为大规模、高性能向量检索设计 | 海量数据、高并发、大规模向量检索                      | 性能强、支持分布式、适合生产级大规模场景                  |
+| Elasticsearch | 传统文本检索引擎，同时支持向量检索                     | 文本检索 + 向量检索的混合检索场景                     | 生态成熟，适合做关键词检索与语义检索结合                  |
+|    Chroma     | 轻量级向量数据库，优先考虑易用性和开发友好性           | 小规模应用、原型验证、本地开发                        | 上手简单，适合快速集成和 Demo 场景                        |
+|   PGvector    | 基于 PostgreSQL 的向量扩展                             | Java 后端项目、中小规模向量检索、已有 PostgreSQL 项目 | 部署简单，可用 Navicat 可视化查看，对 Java 后端程序员友好 |
 
-1. **Pinecone**（云服务，简单好用）
 
-```
-import pinecone
 
-pinecone.init(api_key="your-api-key")
-index = pinecone.Index("my-rag-index")
+![image.webp](https://img.f3f3.top/picgo/1787711758257_image.webp)
 
-#插入向量
-index.upsert([
-    ("doc1_chunk1", vector1, {"text": "阿司匹林是..."}),
-    ("doc1_chunk2", vector2, {"text": "副作用包括..."})
-])
-
-#查询
-results = index.query(query_vector, top_k=3)
-```
-
-**构建索引过程**
+- **主键embedding_id**，**高维向量embedding、原始文本块text、元数据metadata**。
+- **高维向量embedding**：也就是表达语义信息，用于索引的相似度匹配查询。
+- **原始文本块text**：我们检索出来，让大模型引用参考的其实就是一些列的原始文本块，高维向量的只是一个用于相似度查询的索引，模型只有基于原始文本块才可以去进行回答效果的增强。
+- **元数据metadata**：则让我们在检索时能做精确的**过滤、分组或追溯来源。**如**文件名过滤、时间戳过滤**
 
 ```
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Pinecone
-import pinecone
-
-#1. 读取文档
-with open("medical_docs.txt", "r") as f:
-    document = f.read()
-
-#2. 分块
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50,
-    separators=["\n\n", "\n", "。", "！", "？", "，"]
-)
-chunks = text_splitter.split_text(document)
-
-#3. 初始化embedding模型
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
-#4. 初始化向量数据库
-pinecone.init(api_key="your-key")
-index_name = "medical-rag"
-
-#5. 创建索引并存储
-vectorstore = Pinecone.from_texts(
-    texts=chunks,
-    embedding=embeddings,
-    index_name=index_name
-)
-
-print(f"成功索引了 {len(chunks)} 个文本块！")
+docker run --name pgvector \
+  -e POSTGRES_USER=pgvector \
+  -e POSTGRES_PASSWORD=pgvector \
+  -e POSTGRES_DB=rag_test \
+  -p 5433:5432 \
+  -v /home/docker_pgvector:/var/lib/postgresql/data \
+  -d ankane/pgvector:v0.5.0
 ```
 
-1. **Milvus**（开源，功能强大）
+```
+<dependency>
+    <groupId>org.springframework.ai</groupId>
+    <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
 
-1. **FAISS**（Facebook开源，本地使用）
+**vectorStore的bean被注入**
 
-1. **Weaviate**（支持混合搜索）
+- **JdbcTemplate用于和向量数据库交互， 做CRUD。**
+- **EmbeddingModel用来做embed，把文本转换成向量表示。**
 
-### 应用阶段
+```
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5433/rag_test
+    username: pgvector
+    password: pgvector
+  ai:
+    vectorstore:
+      pgvector:
+        # 向量索引类型
+        index-type: HNSW
+        # 距离度量，余弦值
+        distance-type: COSINE_DISTANCE
+        # 向量维度
+        dimensions: 768
+        # 批量处理大小
+        max-document-batch-size: 9
+        # 启动时是否自动创建表
+        initialize-schema: true
+        # 创建的表名
+        table-name: vector_st
+```
+
+- **embed方法：使用openAiEmbeddingModel的embed方法对document做向量化，并把结果返回。**
+- **embedAndStore方法：使用vectorStore的add方法完成向量化+储存到向量数据库**
+
+```
+public void doAdd(List<Document> documents) {
+    List<float[]> embeddings = this.embeddingModel.embed(
+            documents,
+            EmbeddingOptions.builder().build(),
+            this.batchingStrategy
+    );
+
+    List<List<Document>> batchedDocuments = this.batchDocuments(documents);
+    batchedDocuments.forEach(batchDocument ->
+            this.insertOrUpdateBatch(batchDocument, documents, embeddings)
+    );
+}
+```
+
+- `PgVectorStore.add()` 内部，真正执行的是 `doAdd()` 方法
+- 会先调用 embeddingModel` 把 `Document转成向量，然后再通过 JdbcTemplate`把文本、向量、元数据等信息写入 PostgreSQL。
+- `max-document-batch-size` 控制的是**一次最多向量库入库多少个 Document**，并不是控制**一次传给 embedding 模型多少个 Document**。
+
+![image.webp](https://img.f3f3.top/picgo/1787737633075_image.webp)
+
+### 检索生成
 
 #### 数据检索
 
 常见的数据检索方法包括：相似性检索、全文检索等，根据检索效果，一般可以选择多种检索方式融合，提升召回率。
 
 - **相似性检索**：即计算查询向量与所有存储向量的相似性得分，返回得分高的记录。常见的相似性计算方法包括：余弦相似性、欧氏距离、曼哈顿距离等。
+
+```
+public static final int DEFAULT_TOP_K=5;
+
+public List<Document> similarSearch(String query) {
+    return vectorStore.similaritySearch(SearchRequest
+                                    .builder()
+                                    .query(query)
+                                    .topK(DEFAULT_TOP_K)
+                                    .similarityThreshold(0.7f)
+                                    .build());
+} 
+
+public  LIst<Document> similarSearch(SearchRequest){
+return VectorStore.similaritySearch(SearchRequest)
+}
+```
+
+**VectorStore继承于VectorRetriever接口**
+
+|             参数             | 含义                  | 示例值              | 说明                                                         |
+| :--------------------------: | --------------------- | ------------------- | ------------------------------------------------------------ |
+|           `query`            | 用于检索的查询语句    | `"什么是Mybatis？"` | 该 `query` 会被自动向量化，并与向量库中的向量做相似度对比    |
+|         `topK(int)`          | 返回结果条数（Top-K） | `5`                 | 数值越大，返回匹配内容越多；一般 `3~10` 较合理               |
+| `similarityThreshold(float)` | 相似度阈值（0~1）     | `0.7f`              | 用于过滤不相关内容，越接近 `1` 越严格；常用范围 `0.6~0.8`，需要结合业务反复调测 |
+
+#### 检索增强
+
+```
+   @Autowired
+    private ChatModel chatModel;
+
+    @GetMapping("/retrieve")
+    public String retrieve(String query, double threshold) {
+        List<Document> documents = embeddingService.similaritySearch(SearchRequest
+                .builder()
+                .query(query).similarityThreshold(threshold).build());
+
+	//检索的内容并流式输出
+        String documentContent = documents.stream()
+                .map(Document::getText)
+                .collect(Collectors.joining("\n\n=========文档分隔线===========\n\n"));
+
+        // 2. 构建提示词模板
+        String promptTemplate = """
+                请基于以下提供的参考文档内容，回答用户的问题。
+                如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+                
+                参考文档:
+                {documents}
+                
+                用户问题: {question}
+                """;
+
+        PromptTemplate prompt = new PromptTemplate(promptTemplate);
+        Prompt realPrompt = prompt
+        .create(Map.of("documents", documentContent, //检索参考文档
+        "question", query));//询问用户问题
+        return chatModel.call(realPrompt).getResult().getOutput().getText();
+    }
+```
+
+#### QuestionAnswer
+
+- 提供了 **Advisor** 来自动化 RAG 流程
+- **Advisor可以在模型调用前自动插入检索、重写Prompt以及后处理回答，从而无需手写检索和提示词拼接逻辑**。  
+
+```
+<dependency>
+  <groupId>org.springframework.ai</groupId>
+  <artifactId>spring-ai-advisors-vector-store</artifactId>
+  <version>1.1.0</version>
+</dependency>
+```
+
+```
+@RestController
+@RequestMapping("/rag/retriever")
+public class RagRetrieverController implements InitializingBean {
+
+    private ChatClient chatClient;
+
+    @GetMapping("/retrieveAdvisor")
+    public String retrieveAdvisor(String query) {
+        return chatClient.prompt(query).call().content();
+    }
+
+    @Autowired
+    private PgVectorStore vectorStore;
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+
+        // 自定义Prompt模板
+        PromptTemplate promptTemplate = new PromptTemplate("""
+                请基于以下提供的参考文档内容，回答用户的问题。
+                如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+                
+                参考文档内容:
+                {question_answer_context}
+                
+                用户问题: {query}
+                """);
+
+        QuestionAnswerAdvisor questionAnswerAdvisor = 
+        //放入自己的向量数据库
+        QuestionAnswerAdvisor.builder(vectorStore)
+       //设置检索阈值             .searchRequest(SearchRequest.builder().similarityThreshold(0.5).topK(5).build())
+                //设置提示词模板
+                .promptTemplate(promptTemplate).build();
+
+        this.chatClient = ChatClient.builder(chatModel)
+                // 实现 Logger 的 Advisor
+                .defaultAdvisors(questionAnswerAdvisor)
+                
+                
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(
+                        DashScopeChatOptions.builder()
+                                .withTopP(0.7)
+                                .build()
+                ).build();
+    }
+}
+```
+
+**QuestionAnswerAdvisor实现了 BaseAdvisor **
+
+**初始化**
+
+```
+QuestionAnswerAdvisor(VectorStore vectorStore, SearchRequest searchRequest,
+        @Nullable PromptTemplate promptTemplate,
+        @Nullable Scheduler scheduler, int order)
+```
+
+- **校验 vectorStore 和 searchRequest 不能为空**
+- **保存向量库对象**
+- **保存检索参数**
+- **如果没传模板，就用默认模板**
+- **如果没传调度器，就用默认调度器**
+- **保存执行顺序 order**
+
+**QuestionAnswerAdvisor.before(...) 先做检索和提示词增强**
+
+**QuestionAnswerAdvisor.after(...)不改答案正文，只把检索到的文档塞进响应元数据里。**
+
+**保留证据链，方便追踪和调试**
+
+
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant C as Controller
+    participant CC as ChatClient
+    participant A as QuestionAnswerAdvisor
+    participant VS as VectorStore
+    participant LLM as 大模型
+
+    U->>C: 提交 query
+    C->>CC: chatClient.prompt(query).call()
+    CC->>A: before(chatClientRequest)
+    A->>VS: similaritySearch(searchRequest)
+    VS-->>A: 返回相关 Document 列表
+    A->>A: 拼接 documentContext
+    A->>A: 渲染 promptTemplate
+    A-->>CC: 返回增强后的 ChatClientRequest
+    CC->>LLM: 发送“问题 + 文档上下文”
+    LLM-->>CC: 生成回答
+    CC->>A: after(chatClientResponse)
+    A->>A: 把检索文档写入 metadata
+    A-->>CC: 返回完整 ChatClientResponse
+    CC-->>C: content()
+    C-->>U: 最终答案
+```
+
+
+
 - **全文检索**：全文检索是一种比较经典的检索方式，在数据存入时，通过关键词构建倒排索引；在检索时，通过关键词进行全文检索，找到对应的记录。
 
-<details>
-<summary>检索策略</summary>
-**1. 相似性检索（Vector Similarity Search）**
+检索策略 相似性检索
+
 
 这是 RAG 与传统搜索引擎最大的区别，也是让知识库具备“语义理解”能力的根本。
 
@@ -2529,6 +4121,7 @@ for i, doc in enumerate(results):
 - 缺点：对专有名词、数字等不敏感
 
 1. **混合搜索（Hybrid Search）**
+1. **关键词检索（BM25/ES）与向量相似度检索**，提升精确度
 
 - 向量搜索 + 关键词搜索
 
@@ -2573,6 +4166,10 @@ ranked_docs = [doc for _, doc in sorted(zip(scores, candidate_docs), reverse=Tru
 | Precision@K | 前K个结果中，有多少是相关的   | 相关文档数 / K                    | 越高越好 |
 | MRR         | 第一个相关文档的排名倒数      | 1 / 第一个相关文档的排名          | 越高越好 |
 | NDCG        | 考虑排序质量的综合指标        | 复杂公式                          | 越高越好 |
+
+
+
+
 
 #### 提示词工程
 
@@ -2822,10 +4419,6 @@ messages=[
 #### LLM生成
 
 ```
-
-```
-
-```
 【任务描述】
 假如你是一个专业的客服机器人，请参考【背景知识】，回
 【背景知识】
@@ -2850,55 +4443,180 @@ RAG 并不是“给大模型接个数据库”这么简单，而是一套完整�
 
 后续如果继续展开，可以分别从**分块策略优化、召回与重排序、多路检索融合、幻觉评估与监控**等角度，进一步把 RAG 从“能跑”推进到“能上线、能长期用”。
 
-```
-def rag_query(question):
-    """完整的RAG查询流程"""
-    # 1. 检索相关文档
-    retrieved_docs = vectorstore.similarity_search(question, k=3)
-    # 2. 构建prompt
-    context = "\n\n".join([
-        f"【文档{i+1}】{doc.page_content}"
-        for i, doc in enumerate(retrieved_docs)
-    ])
-    prompt = f"""
-    参考以下资料回答问题：
-    {context}
-    问题：{question}
-    要求：
-    1. 回答要准确、专业
-    2. 必须基于参考资料
-    3. 标注信息来源
-    """
-    # 3. 调用LLM生成
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    answer = response.choices[0].message.content
-    # 4. 添加引用
-    sources = [
-        {"title": f"文档{i+1}", "score": doc.metadata.get('score', 0)}
-        for i, doc in enumerate(retrieved_docs)
-    ]
-    return {
-        "answer": answer,
-        "sources": sources,
-        "retrieved_docs": [doc.page_content for doc in retrieved_docs]
-    }
-
-#使用示例
-result = rag_query("阿司匹林有哪些副作用？")
-print("答案:", result['answer'])
-print("\n参考来源:", result['sources'])
-```
-
 | 指标         | 评估内容               |       评估方法       |
 | ------------ | ---------------------- | :------------------: |
 | Faithfulness | 答案是否忠实于检索文档 |  LLM评判 / 人工标注  |
 | Relevance    | 答案是否回答了问题     | LLM评判 / 相似度计算 |
 | Coherence    | 答案是否流畅连贯       |    语言模型困惑度    |
 | Groundedness | 答案是否有依据         |    检查是否有引用    |
+
+## RAG优化
+
+### 元数据过滤
+
+#### 初识
+
+- **元数据（Metadata）是附加到文本块（Chunk）上的结构化信息** 
+- **描述文本块的“数据”。 一个文本块的元数据可以包含：文件名、页码、userid等等**
+- **切块后保存元数据然后向量化保存到向量数据库**
+
+#### 作用
+
+**精确过滤：关系型数据库的精确检索和相似度查询的结合**
+
+- 同一个问题的描述是不一样的，“**如何启动汽车**”，2023年版中用**钥匙启动**，2024年版中，用**旋钮启动**，2025年通过**手机来启动**
+- 用户这候提问“**根据《汽车用户手册（2023年版）》，汽车应该如何启动？**”，如果**没有元数据**，普通的相似度检索，三个版本的文本块**仅仅是年份的一个数字不一样**，**相似度其实都非常高**，可能会将这**三种都检索到**，
+- 而将**文档的名称存入元数据，当我在进行相似度检索之前，进行一次元数据过滤**，这样就可以完全过滤掉2024版和2025版这两个版本的相关文本块，仅仅针对元数据是2023年版的做相似度检索
+
+**模型给出的回答，用户无法判断这些内容是否真的来自企业知识库**
+
+- **参考来源：**《汽车用户手册（2024年版）》第5页
+
+**访问权限**
+
+将访问权限信息一并写入元数据，
+
+先根据用户身份进行一次元数据过滤，屏蔽掉用户无权访问的文本块，再执行相似度检索。
+
+- 部门id/角色id/用户id
+- 保密等级
+- 生效时间或版本状态等
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 问题改写
+
+
+
+
+
+
+
+
+
+### 查询路由
+
+
+
+
+
+
+
+
+
+
+
+### 查询构造
+
+
+
+
+
+
+
+
+
+
+
+### 问题澄清
+
+
+
+
+
+
+
+
+
+
+
+
+
+### HyDE
+
+
+
+
+
+
+
+
+
+
+
+### 混合检索
+
+
+
+
+
+
+
+
+
+### 重排序
+
+
+
+
+
+
+
+### GraghRAG
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Agent
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### 动态TOPK算法
 
@@ -3372,7 +5090,7 @@ print(f"✅ 答案: {answer}")
 传统RAG只用向量检索(语义匹配），对关键词精确匹配效果差。本系统采用语义检索+关键词检索双路召回+
 RRF 融合排序：
 
-## Agent
+## 
 
 
 

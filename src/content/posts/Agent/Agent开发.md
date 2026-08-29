@@ -1,27 +1,17 @@
 ---
-
 title: Agent开发
 description: 🥧Agent学习之路开启
 image: 'https://img.f3f3.top/img/1786551490276_image.webp'#文章封面页
 tags:
   - Agent所有知识
-category: Agent 
-  #永久连接id
+category: Agent
+#永久连接id
 abbrlink: "7777841"
 # 文章置顶
 pinned: true #文章置顶
 published: 2026-07-18 18:19:03
 updated: 2026-07-20 10:43:03
 ---
-
-## 认识Agent
-
-一个Agent =
-
-1. **大脑（LLM）**
-1. **手脚（Tools / MCP）**
-1. **记忆（Memory）**
-1. **规划（Planning / Workflow）**
 
 ## LLM
 
@@ -3859,8 +3849,8 @@ public void doAdd(List<Document> documents) {
 }
 ```
 
-- `PgVectorStore.add()` 内部，真正执行的是 `doAdd()` 方法
-- 会先调用 embeddingModel` 把 `Document转成向量，然后再通过 JdbcTemplate`把文本、向量、元数据等信息写入 PostgreSQL。
+- **PgVectorStore.add()内部，真正执行的是 doAdd() 方法**
+- **会先调用 embeddingModel` 把 `Document转成向量，然后再通过 JdbcTemplate`把文本、向量、元数据等信息写入 PostgreSQL。**
 - `max-document-batch-size` 控制的是**一次最多向量库入库多少个 Document**，并不是控制**一次传给 embedding 模型多少个 Document**。
 
 ![image.webp](https://img.f3f3.top/picgo/1787737633075_image.webp)
@@ -3979,9 +3969,17 @@ public class RagRetrieverController implements InitializingBean {
         QuestionAnswerAdvisor questionAnswerAdvisor = 
         //放入自己的向量数据库
         QuestionAnswerAdvisor.builder(vectorStore)
-       //设置检索阈值             .searchRequest(SearchRequest.builder().similarityThreshold(0.5).topK(5).build())
-                //设置提示词模板
-                .promptTemplate(promptTemplate).build();
+                 
+       .searchRequest(SearchRequest.builder()
+          //设置检索阈值（低于这个值会被过滤）
+       .similarityThreshold(0.5)
+       
+       //返回的个数
+       .topK(5).build())
+       
+           //设置提示词模板
+        .promptTemplate(promptTemplate).build();
+
 
         this.chatClient = ChatClient.builder(chatModel)
                 // 实现 Logger 的 Advisor
@@ -4452,6 +4450,535 @@ RAG 并不是“给大模型接个数据库”这么简单，而是一套完整�
 
 ## RAG优化
 
+### 问题改写
+
+**分解：**
+
+- **增加一模型调用对原问题进行逻辑解析和拆分。**
+- **检索子查询列表收集所有相关文档块，将所有文档块和原始问题一并输出**
+
+**富化：指代消除，用于指代模糊信息，重写原问题**
+
+**多样化：增加模型调用，通过大模型为原始问题生成多个语义相近去重**
+
+**回溯提示**
+
+```
+@Service
+@Slf4j
+public class QuestionRewriteService {
+
+    @Autowired
+    private ChatModel chatModel;
+
+    //分解提示词
+    private static final String DECOMPOSE_PROMPT = """
+            # 角色
+            你是一名专业的查询逻辑分析专家。
+            
+            # 任务
+            将给定的“用户原始问题”分解为一系列**相互独立、逻辑清晰**，且可单独用于检索的子查询列表。
+            你的输出必须是一个标准的JSON数组格式。
+            
+            # 用户原始问题
+            {QUESTION}
+            
+            # 输出格式要求 (JSON Array)
+            [
+              "子查询1",
+              "子查询2",
+              "子查询3",
+              "..."
+            ]
+            
+            （不强制要求数组元素个数，可根据真实情况输出，至少保留1个）
+            
+            # 输出
+            请直接输出JSON数组，不要包含解释或多余的文字。  """;
+
+    //问题的富化
+    private static final String ENRICH_PROMPT = """
+            # 角色
+            你是一个专业的问题重写优化器。
+            
+            # 任务
+            根据提供的“对话历史”和“用户原始问题”，重写为一个独立、完整、且包含所有必要背景信息的新查询，用于RAG检索。
+            
+            ## 对话历史：
+            {CHAT_HISTORY}
+            
+            ## 原始问题：
+            {QUESTION}
+            
+            # 输出
+            输出富化过后的新问题，不要包含多余的解释性内容
+            """;
+
+    //问题的多样化
+    private static final String DIVERSIFY_PROMPT = """
+            # 角色
+            你是一名专业的语义扩展专家。
+            
+            # 任务
+            为给定的“原始问题”生成**3个**语义相同但**措辞完全不同、且利于检索**的查询变体，以提高检索的召回率。
+            你的输出必须是一个标准的JSON数组格式。
+            
+            # 原始问题
+            {QUESTION}
+            
+            # 输出格式要求 (JSON Array)
+            [
+              "变体1",
+              "变体2",
+              "变体3"
+            ]
+            
+            # 输出
+            输出富化过后的新问题，不要包含多余的解释性内容
+            """;
+
+    private static final String STEP_BACK = """
+             # 角色
+            你是一个擅长抽象思维和原理推理的专家。
+            
+            # 任务
+            请根据用户提出的具体问题，先“后退一步”，将其转化为一个更通用、更本质的问题，聚焦于背后的原理、规律、概念或一般性知识，而不是具体细节。
+            
+            # 原始问题
+            
+            {QUESTION}
+            
+            # 输出
+            请只输出改写后的“后退问题”，不要解释，不要包含原始问题，也不要回答它。
+            """;
+
+    private static final String QUESTION = "QUESTION";
+    private static final String CHAT_HISTORY = "CHAT_HISTORY";
+
+    /**
+     * 问题分解
+     *
+     * @param question
+     * @return
+     */
+    public List<String> decompose(String question) {
+        log.info("===========进入问题分解流程===========");
+        log.info("原始问题: {}", question);
+        PromptTemplate promptTemplate = new PromptTemplate(DECOMPOSE_PROMPT);
+        promptTemplate.add(QUESTION, question);
+
+        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+        log.info("===========问题分解完成，结果: {} ===========", result);
+        return JSON.parseArray(result, String.class);
+    }
+
+    /**
+     * 问题富化
+     */
+    public String enrich(String chatHistory, String question) {
+        log.info("===========进入问题富化流程===========");
+        log.info("对话历史: {}", chatHistory);
+        log.info("原始问题: {}", question);
+        PromptTemplate promptTemplate = new PromptTemplate(ENRICH_PROMPT);
+        promptTemplate.add(CHAT_HISTORY, chatHistory);
+        promptTemplate.add(QUESTION, question);
+
+        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+        log.info("===========问题富化完成，结果: {} ===========", result);
+        return result;
+    }
+
+    /**
+     * 问题多样化
+     */
+    public List<String> diversify(String question) {
+        log.info("===========进入问题多样化流程===========");
+        log.info("原始问题: {}", question);
+        PromptTemplate promptTemplate = new PromptTemplate(DIVERSIFY_PROMPT);
+        promptTemplate.add(QUESTION, question);
+
+        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+        log.info("===========问题多样化完成，结果: {} ===========", result);
+        return JSON.parseArray(result, String.class);
+    }
+
+    /**
+     * 问题回退
+     *
+     * @param question
+     * @return
+     */
+    public String stepBack(String question) {
+        log.info("===========进入问题回退流程===========");
+        log.info("原始问题: {}", question);
+        PromptTemplate promptTemplate = new PromptTemplate(STEP_BACK);
+        promptTemplate.add(QUESTION, question);
+
+        String result = chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+        log.info("===========问题回退完成，结果: {} ===========", result);
+        return result;
+    }
+
+    // 组合方法
+    public List<String> rewriteQuery(String query) {
+        log.info("===========进入问题重写组合策略流程===========");
+        log.info("原始问题: {}", query);
+
+        //回退
+        String stepBackQuery = this.stepBack(query);
+
+        // 分解
+        List<String> decomposedQueries = this.decompose(stepBackQuery);
+
+        // 多样化
+        List<String> finalQueries = new ArrayList<>();
+        for (String subQuery : decomposedQueries) {
+            List<String> variations = this.diversify(subQuery);
+            finalQueries.addAll(variations);
+        }
+
+        if (finalQueries.isEmpty()) {
+            finalQueries.add(query);
+        }
+
+        log.info("===========组合重写完成，最终查询列表: {} ===========", finalQueries);
+        return finalQueries;
+    }
+}
+
+
+```
+
+```
+@GetMapping("/chatWithQueryRewrite")
+public String chatWithQueryRewrite(@RequestParam("query") String query) {
+    List<String> rewriteQuery = queryRewriteService
+.rewriteQuery(query);
+    // set用作文档去重
+    Set<Document> similarDocs = new LinkedHashSet<>();
+    for (String q : rewriteQuery) {
+        List<Document> docs = embeddingService.similarSearch(q);
+        if (docs != null && !docs.isEmpty()) {
+            similarDocs.addAll(docs);
+        }
+    }
+    // 2. 构建提示词模板
+    String promptTemplate = """
+    请基于以下提供的参考文档内容，回答用户的问题。
+
+    参考文档:
+    {documents}
+
+    用户问题: {question}
+    """;
+
+    log.info("共检索到 {} 个相关文档块。", similarDocs.size());
+
+    // 3. 处理检索到的文档内容
+    String documentContent = similarDocs.stream()
+    .map(Document::getText)
+    .collect(Collectors.joining("\n\n=========文档分隔线===========\n\n"));
+
+    log.info("查询到的文档信息：{}", documentContent);
+
+    // 4. 填充模板参数
+    Map<String, Object> params = new HashMap<>();
+    params.put("documents", documentContent);
+    params.put("question", query);
+    PromptTemplate prompt = new PromptTemplate(promptTemplate);
+    Prompt realPrompt = prompt.create(Map.of("documents", documentContent, "question", query));
+
+    // 5. 调用大模型生成回答
+    String text = chatClient.prompt(realPrompt).call().chatResponse().getResult().getOutput().getText();
+
+    return text;
+}
+```
+
+- 调用 `queryRewriteService.rewriteQuery(query)` 生成多个查询语句。
+- 每个查询语句都执行一次向量检索。
+- 用 `LinkedHashSet<Document>` 去重。
+- 把所有检索到的文档块拼接起来。
+- 再交给大模型生成最终回答。
+
+### 查询路由
+
+#### 数据源
+
+- **不能只靠向量数据库**
+- **Query Routing把用户的请求转发到不同的数据库上面去查询**
+
+##### 定义路由
+
+**定义四个数据库路由的执行方法**
+
+```
+@Service
+public class GraphDatabaseService {
+
+    public String searchGraphDatabase(String query) {
+        return "图数据库搜索结果: 基于关系图谱，找到与'" + query + "'相关的实体关系和路径。" +
+                "这里模拟返回了知识图谱的实体关联结果，实际应用中会连接到Neo4j、ArangoDB或Amazon Neptune等图数据库。";
+    }
+}
+```
+
+##### 意图识别
+
+**基于LLM设置提示词做意图识别**
+
+```
+@Service
+public class QueryRouteService {
+
+    private static final String DATASOURCE_ROUTE_PROMPT =
+            """
+                你需要判断用户的查询问题适合使用哪种数据库进行检索。
+                如果是语义相似性搜索、文档检索、内容推荐类问题，回答'VECTOR'
+                如果是关系查询、知识图谱、实体关联类问题，回答'GRAPH'
+                如果是结构化数据查询、统计分析、精确匹配类问题，回答'RELATIONAL'
+                如果无法确定，请回答'VECTOR'
+                只回答VECTOR、GRAPH或RELATIONAL，不要其他内容。
+                
+                用户问题：
+                {QUESTION}
+                """;
+
+
+    @Autowired
+    private ChatModel chatModel;
+
+    public String route(String query) {
+        PromptTemplate promptTemplate = new PromptTemplate(DATASOURCE_ROUTE_PROMPT);
+        promptTemplate.add("QUESTION", query);
+
+        return chatModel.call(promptTemplate.create()).getResult().getOutput().getText();
+    }
+
+}
+```
+
+**根据用户的问题，决策出要调具体的数据库服务**
+
+```
+@RestController
+@RequestMapping("/rag/router")
+public class RagRouterController {
+//引入4个路由
+    @Autowired
+    private QueryRouteService queryRouteService;
+    @Autowired
+    private VectorDatabaseService vectorDatabaseService;
+    @Autowired
+    private GraphDatabaseService graphDatabaseService;
+    @Autowired
+    private RelationalDatabaseService relationalDatabaseService;
+
+    @RequestMapping("/query")
+    public String ragQuery(HttpServletResponse response, @RequestParam String question) {
+        response.setCharacterEncoding("UTF-8");
+     //意图识别
+        String databaseType = queryRouteService.route(question);
+
+        String result;
+        switch (databaseType.trim()) {
+            case "VECTOR":
+                result = vectorDatabaseService.searchVectorDatabase(question);
+                break;
+            case "GRAPH":
+                result = graphDatabaseService.searchGraphDatabase(question);
+                break;
+            case "RELATIONAL":
+                result = relationalDatabaseService.searchRelationalDatabase(question);
+                break;
+            default:
+                result = "无法确定合适的数据库类型，默认使用向量数据库: " +
+                        vectorDatabaseService.searchVectorDatabase(question);
+        }
+
+        return String.format("路由到: %s 数据库\n\n查询结果:\n%s", databaseType, result);
+    }
+}
+```
+
+##### text2sql
+
+- **把用户问题路由到不同的数据库中去查询。如果是向量数据库，那么就可以去向量数据库查询了。**
+- **但是如果是图数据库或者关系型数据库，就需要先把自然语言转成SQL或者Cypher 才行**
+
+```
+# 角色
+你是一个SQL专家。请根据以下表结构信息将用户问题转换为SQL查询语句。特别注意，你只能查询，不能做修改、删除等操作。
+            
+# 表结构信息
+            
+{tables}
+            
+# 用户问题
+            
+{user_query}
+            
+# 要求
+1. 只返回SQL语句，不需要包含任何解释和说明
+2. 确保SQL语法正确
+3. 使用上下文中提供的表名和字段名
+4. 如果根据所提供的表无法做查询，请直接返回空字符串""
+            
+# 其他说明
+今天是:{today}
+```
+
+#### prompt
+
+- **Prompt 1：你是一个专业的医生，可以从专业的医疗角度给出患者建议。**
+- **Prompt 2：你是一个专业的药学专家，掌握丰富的药品知识，能够在用药方面给出更好的建议。**
+- **根据用户是询问病情还是用药建议，使用不同的提示词。**
+
+```
+@AiService
+public interface MedicalPromptRoutingService {
+
+    @SystemMessage("你是一个专业的医生，可以从专业的医疗角度给出患者建议。")
+    Flux<String> doctorConsultation(String userMessage);
+
+    @SystemMessage("你是一个专业的药学专家，掌握丰富的药品知识，能够在用药方面给出更好的建议。")
+    Flux<String> pharmacistConsultation(String userMessage);
+
+    @SystemMessage("你需要判断用户的询问是关于病情咨询还是用药建议。如果是询问病情、症状、诊断相关的问题，回答'DOCTOR'。如果是询问药物、用药方法、药物副作用相关的问题，回答'PHARMACIST'。只回答DOCTOR或PHARMACIST，不要其他内容。")
+    String determineConsultationType(String userMessage);
+}
+```
+
+**determineConsultationType方法，用来做意图识别**
+
+```
+@RequestMapping("/medical")
+@RestController
+public class MedicalAssistantController {
+
+    @Autowired
+    private MedicalPromptRoutingService medicalRoutingService;
+
+    @RequestMapping("/consultation")
+    public Flux<String> medicalConsultation(HttpServletResponse response, @RequestParam String question) {
+        response.setCharacterEncoding("UTF-8");
+
+        String consultationType = medicalRoutingService.determineConsultationType(question);
+
+        if ("DOCTOR".equals(consultationType.trim())) {
+            return medicalRoutingService.doctorConsultation(question);
+        } else if ("PHARMACIST".equals(consultationType.trim())) {
+            return medicalRoutingService.pharmacistConsultation(question);
+        } else {
+            return medicalRoutingService.doctorConsultation(question);
+        }
+    }
+```
+
+### 问题澄清
+
+- **用户的问题存在模糊、不完整、歧义或需要额外上下文才能被准确回答时，**
+- **主动与用户进行交互，以获取更多信息或确认其真实意图**
+
+```
+public interface TravelPlanningAiService {
+
+    @SystemMessage("""
+            你是一个专业的旅行顾问，擅长制定个性化的旅行方案。
+            
+            对话原则：
+            1. 保持热情、友好的语调，像朋友一样自然对话
+            2. 基于已有信息给出建议和想法
+            3. 如需更多信息，自然地询问细节（避免"我需要更多信息"这样的表达）
+            4. 当信息足够时，生成详细的旅行规划
+            
+            根据用户输入的不同性质，你需要：
+            
+            【信息收集阶段】
+            - 说"听起来很棒！具体想..."来了解细节
+            - 通过建议来引出问题："这个地方我很推荐！大概预算多少合适？"
+            - 每次最多问1-2个相关问题
+            
+            【规划生成阶段】
+            - 当掌握了目的地、时间、预算、人员等核心信息时
+            - 生成包含具体日程、住宿、交通、活动的详细规划
+            - 提供实用的旅行建议和注意事项
+            
+            始终提供有价值的内容，避免让用户感觉在被"审问"。
+            """)
+    String chatWithTraveler(@MemoryId String memoryId, @UserMessage String userInput);
+}
+```
+
+需要支持对话记忆，因为用户可能是多轮对话汇总之后才是他的所有要求和基本信息
+
+```
+@RequestMapping("/travelPlan")
+@RestController
+public class SmartTravelPlanningController {
+
+    @Autowired
+    private TravelPlanningAiService travelAiService;
+
+    @RequestMapping("/start")
+    public Map<String, String> startTravelPlanning(HttpServletResponse response) {
+        response.setCharacterEncoding("UTF-8");
+
+        String memoryId = UUID.randomUUID().toString();
+
+        String welcomeMessage = """
+                🌟 欢迎使用智能行程规划助手！
+                
+                我可以帮助您制定个性化的旅行计划。为了给您提供最佳的建议，我需要了解一些基本信息：
+                
+                • 您想去哪里旅行？
+                • 计划什么时候出发？
+                • 大概的预算范围？
+                • 和谁一起旅行？
+                • 您的兴趣爱好？
+                
+                请告诉我您的旅行想法，我会根据您提供的信息逐步完善行程计划！
+                """;
+
+        return Map.of(
+                "sessionId", memoryId,
+                "message", welcomeMessage
+        );
+    }
+
+    @RequestMapping("/chat")
+    public String chatWithPlanner(HttpServletResponse response,@RequestParam String memoryId,@RequestParam String message ) {
+        response.setCharacterEncoding("UTF-8");
+
+        return travelAiService.chatWithTraveler(memoryId, message);
+    }
+
+    @RequestMapping("/force-plan")
+    public String forcePlan(HttpServletResponse response, @RequestParam String memoryId) {
+        response.setCharacterEncoding("UTF-8");
+
+        return travelAiService.chatWithTraveler(memoryId,
+                "请基于我们到目前为止的所有对话，生成完整详细的行程规划方案");
+    }
+}
+```
+
+通过系统提示词要求 LLM 先判断信息是否足够。如果不够，就进入**信息收集阶段**；如果足够，就进入**规划生成阶段**
+
+- start：开启对话
+- chatWithPlanner：对话，可能会要求需求澄清或者给出行程建议
+- forcePlan：强行生成旅行建议
+
+
+
+
+
+
+
+
+
+
+
 ### 元数据过滤
 
 #### 初识
@@ -4482,711 +5009,1415 @@ RAG 并不是“给大模型接个数据库”这么简单，而是一套完整�
 - 保密等级
 - 生效时间或版本状态等
 
+#### **入库**
 
+```
+ public void embedAndStore(List<Document> documents) {
+        for (int i = 0; i < documents.size(); i += 9) {
+            List<Document> batches = documents.subList(i, Math.min(i + 9, documents.size()));
+            vectorStore.add(batches);
+        }
+    }
+```
 
+**vectorStore.add(batches)不是单纯入库，内部完成向量化再入库**
 
+```
+@GetMapping("/embedding")
+    public String embedding(String filePath, String fileName) {
+		//读取文档
+        List<Document> documents;
+        try {
+            documents = documentReaderFactory.read(new File(filePath));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+			//添加元数据
+        for (Document document : documents) {
+            document.getMetadata().put("fileName", fileName);
+        }
 
+        embeddingService.embedAndStore(documents);
 
+        return "success";
+    }
+```
 
+```
+你的 EmbeddingService.embedAndStore(...)
+        ↓
+vectorStore.add(batches)
+        ↓
+AbstractObservationVectorStore.add(...)
+        ↓
+PgVectorStore.doAdd(...)
+        ↓
+embeddingModel.embed(documents, ...)
+        ↓
+insertOrUpdateBatch(...)
+        ↓
+写入 content + metadata + embedding
+```
 
+**向量化的是 `Document.getText()`，metadata 不参与向量化，只是跟着一起入库。**
 
+#### 过滤
 
+```
+    @Override
+    public void afterPropertiesSet() throws Exception {
 
+        // 自定义Prompt模板
+        PromptTemplate promptTemplate = new PromptTemplate("""
+                请基于以下提供的参考文档内容，回答用户的问题。
+                如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+                
+                参考文档内容:
+                {question_answer_context}
+                
+                用户问题: {query}
+                """);
 
+        QuestionAnswerAdvisor questionAnswerAdvisor = QuestionAnswerAdvisor.builder(vectorStore)
+                .searchRequest(SearchRequest.builder().similarityThreshold(0.5).topK(5).build())
+                .promptTemplate(promptTemplate).build();
 
-### 问题改写
+        this.chatClient = ChatClient.builder(chatModel)
+                // 实现 Logger 的 Advisor
+                .defaultAdvisors(questionAnswerAdvisor)
+                // 设置 ChatClient 中 ChatModel 的 Options 参数
+                .defaultOptions(
+                        DashScopeChatOptions.builder()
+                                .withTopP(0.7)
+                                .build()
+                ).build();
+    }
+```
 
+```
+@GetMapping("/retrieveAdvisorWithMetadata")
+public String retrieveAdvisorWithMetadata(String query, String fileName) {
+    return chatClient.prompt(query)
+            .advisors(advisorSpec -> advisorSpec.param("qa_filter_expression", "fileName == '" + fileName + "'"))
+            .call().content();
+}
+```
 
+```
+advisorSpec.param(...)
+        ↓
+参数进入 ChatClientRequest.context()
+        ↓
+QuestionAnswerAdvisor.before(...)
+        ↓
+doGetFilterExpression(...)
+        ↓
+SearchRequest.filterExpression(...)
+        ↓
+vectorStore.similaritySearch(...)
+```
 
-
-
-
-
-
-
-### 查询路由
-
-
-
-
-
-
-
-
-
-
-
-### 查询构造
-
-
-
-
-
-
-
-
-
-
-
-### 问题澄清
-
-
-
-
-
-
-
-
-
-
-
-
+- **filterExpression就是过滤匹配的表达式**
+- **用户问题 + fileName 条件 -> 只在指定文件里找相似内容**
+- **阈值similarityThreshold调低**
+- **不同文档、不同提问方式，这个参数都不太一样，你需要找到一个能够最大程度过滤掉无效文本块、保留相似文本块的参数值，需要反复调试**
 
 ### HyDE
 
+- **传统 RAG:** 用户问题 -> 向量检索 -> 基于文档生成答案
+- **HyDE 流程**用户问题 -> LLM 生成假设答案 -> 用假设答案检索真实文档 -> 基于真实文档交给LLM生成最终答案
 
+**解决问题**
 
-
-
-
-
-
-
-
+- **用户表达和文档表达不一致**
+  用户说得口语化，文档写得专业化，HyDE 可以把用户问题转换成更接近文档风格的表达。
+- **用户问题太短、太模糊**
+  原问题信息少，向量检索效果差。假设答案会补充上下文，让检索更稳定。
 
 ### 混合检索
 
+#### 传统检索
 
+**向量检索**（如基于向量的语义相似度搜索）：
 
+- 能捕捉语义信息，但可能在**精确关键词**匹配上表现不佳。
+- 对训练数据、包括文档的质量、切片和嵌入质量高度依赖，容易受嵌入偏差影响
 
+**关键字搜索**（如 BM25）：
 
+- 依赖文档**切分出来的关键词**进行匹配。
+- 无法理解**语义相似但用词不同**的查询与文档（例如“汽车” vs “轿车”）。
 
+**BM25**
 
+- **ElasticSearch中倒排索引将“关键词”映射到“文档ID”的数据结构，实现了快速定位候选文档**
+- **BM25（则是在通过倒排索引查找到候选文档后，利用其词频（TF）和逆文档频率（IDF）计算相关性得分并排序的算法。**
 
-
-### 重排序
-
-
-
-
-
-
-
-### GraghRAG
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Agent
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-### 动态TOPK算法
-
-#### 认识
-
-**固定 Top-K**
-
-- Top-K 表示从知识库中取回得分最高的 K 个文本块。
-- 每次检索固定K个候选
-  优点简单，缺点灵活性差，无法应对负载变化或动态重要性
-
-动态 Top-K 不是某一种固定算法，而是一套根据查询难度、检索分数和上下文预算动态决定召回数量的策略。
+#### es部署
 
 ```
-用户问题
-  ↓
-召回较多候选文档
-  ↓
-过滤、去重和重排序
-  ↓
-计算相关性得分
-  ↓
-动态阈值和分数断层判断
-  ↓
-Token 预算控制
-  ↓
-返回最终 K 个片段
-```
-
-#### 初始召回
-
-向量数据库通常仍然要求传入一个固定的 K，因此可以先召回较多候选
-
-```
-向量召回 Top-30
-→ 重排序 Top-20
-→ 动态选择最终 0～10 个片段
-```
-
-初始召回数量可以根据系统状态调整：
-
-- 高负载：适当减小候选数量；
-- 系统空闲：增加候选数量，提高召回率；
-- 查询复杂：扩大候选范围；
-- 缓存命中：直接复用已有候选。
-
-#### 评分与重排
-
-候选片段可以根据以下信息评分：
-
-- 向量相似度；
-
-- BM25 关键词得分；
-
-- Reranker 重排分数；
-
-- 文档权威性和时效性；
-
-- 来源优先级；
-
-- 历史点击或命中率
-
-```
-向量检索或混合检索负责召回
-→ Reranker 负责精确评分
-```
-
-动态截断最好依据 Reranker 分数，而不是未经校准的原始向量距离
-
-
-
-
-
-
-
-### 多路召回设计
-
-#### BM25
-
-#### RANK
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-### 父子索引
-
-### 优化选型
-
-#### 总览
-
-| 模块       | 解决的问题           | 主要优化手段                                 |
-| ---------- | -------------------- | -------------------------------------------- |
-| 知识工程   | 有没有正确知识       | 自动知识生产、语义切分、元数据补全、冲突治理 |
-| Query 改写 | 用户问题能不能被搜到 | 主改写、子问题拆解、同义改写、改写模型微调   |
-| 检索召回   | 能不能找回相关证据   | 向量检索、BM25、GraphRAG、标签加权、双路检索 |
-| Rerank     | 正确证据能不能排前   | 多路结果融合、去重、重排序模型               |
-| 截断策略   | 关键证据会不会被丢掉 | 证据压缩、8K token 截断、保留高价值片段      |
-| 可信生成   | 模型会不会胡编       | 证据约束 RL、安全奖励、URL 校验              |
-| 过程评测   | 错误发生在哪一环     | 10 阶段评测、badcase 归因、中间产物保存      |
-| 反馈闭环   | 线上错误能不能修复   | 点踩回流、分诊 Agent、知识草稿、评测集回归   |
-
-#### Query
-
-##### Multi 
-
-**核心思想**
-
-**一个问题，多种问法。**
-
-###### 工作流程
-
-1. **输入原始问题**：用户问"Python如何处理JSON数据？"
-1. LLM生成多个查询
-1. ： 
-   1. Query 1: "Python解析JSON的方法"
-   1. Query 2: "如何在Python中读取JSON文件"
-   1. Query 3: "Python JSON模块使用教程"
-   1. Query 4: "Python处理JSON格式数据的最佳实践"
-1. **并行检索**：用这4个查询同时去向量数据库检索
-1. **结果合并**：把4次检索的结果去重、排序，得到最终结果
-
-```
-#伪代码示例
-original_query = "如何提高代码执行效率？"
-
-#LLM生成多个查询
-multi_queries = llm.generate_queries(original_query, num_queries=4)
-#输出：
-#["代码性能优化技巧",
-#"提升程序运行速度的方法",
-#"如何让代码跑得更快",
-#"代码执行效率优化最佳实践"]
-
-#并行检索
-all_results = []
-for query in multi_queries:
-    results = vector_db.search(query, top_k=5)
-    all_results.extend(results)
-
-#去重合并
-final_results = deduplicate_and_rank(all_results)
-```
-
-##### RAG-Fusion
-
-###### BRF
-
-RAG-Fusion是Multi Query的**进化版**，不仅生成多个查询，还使用了**倒数排序融合（Reciprocal Rank Fusion, RRF）**算法来合并结果。
-
-简单说：**不是简单粗暴地把结果堆一起，而是科学地给每个结果打分，让真正重要的文档排在前面。**
-
-**RAG-Fusion工作流程**
-
-1. **生成多个查询**（和Multi Query一样）
-1. **并行检索**（和Multi Query一样）
-1. **使用RRF算法融合结果**（这是关键！）
-1. **返回重新排序后的Top-K文档**
-
-```
-def reciprocal_rank_fusion(search_results_dict, k=60):
-    """
-    使用倒数排序融合算法合并多个搜索结果
-    Args:
-        search_results_dict: {query: [(doc_id, score), ...]}
-        k: RRF常数，默认60
-    Returns:
-        融合后的排序结果
-    """
-    fused_scores = {}
-    for query, doc_scores in search_results_dict.items():
-        for rank, (doc_id, score) in enumerate(doc_scores, start=1):
-            if doc_id not in fused_scores:
-                fused_scores[doc_id] = 0
-            # RRF公式
-            fused_scores[doc_id] += 1 / (k + rank)
-    # 按融合分数降序排序
-    reranked_results = sorted(
-        fused_scores.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-    return reranked_results
-
-#使用示例
-search_results = {
-    "query1": [("doc1", 0.95), ("doc2", 0.88), ("doc3", 0.82)],
-    "query2": [("doc2", 0.92), ("doc1", 0.87), ("doc4", 0.80)],
-    "query3": [("doc3", 0.90), ("doc2", 0.85), ("doc1", 0.78)]
-}
-
-final_ranking = reciprocal_rank_fusion(search_results)
-print(final_ranking)
-#输出：[('doc2', 0.0486), ('doc1', 0.0479), ('doc3', 0.0320), ('doc4', 0.0161)]
-```
-
-假设我们要回答："Python异步编程的优势是什么？"
-
-##### 区别
-
-**普通Multi Query（简单合并）：**
-
-- 结果包含很多重复文档
-- 排序不一定科学
-- Top-5可能都来自同一个查询
-
-**RAG-Fusion（RRF融合）：**
-
-- 去重且智能排序
-- 综合考虑所有查询的反馈
-- Top-5结果更多样化、更全面
-
-**注意事项**
-
-✅ **适用场景：**
-
-- 用户问题比较复杂，需要多角度检索
-- 对召回率要求高的场景
-- 希望结果多样性的场景
-
-❌ **不适用场景：**
-
-- 简单的事实查询（浪费资源）
-- 实时性要求极高的场景（会增加延迟）
-- 资源受限的环境（多次LLM调用 + 多次检索）
-
-#### 问题拆分
-
-**核心思想**
-
-**把一个复杂问题拆解成多个简单的子问题，逐个击破**
-
-```
-原始问题
-    ↓
-LLM分解为子问题
-    ↓
-并行检索每个子问题
-    ↓
-获得每个子问题的答案
-    ↓
-LLM综合所有子答案，生成最终回答
+docker run -d --name es-node \
+-p 9200:9200 -p 9300:9300 \
+-e "discovery.type=single-node" \
+-e "xpack.security.enabled=false" \
+docker.elastic.co/elasticsearch/elasticsearch:8.19.10
 ```
 
 ```
-from langchain.llms import OpenAI
-from langchain.prompts import PromptTemplate
-
-#步骤1: 问题分解
-decompose_prompt = PromptTemplate(
-    template="""
-    请将以下复杂问题分解为3-6个简单的子问题。
-    每个子问题应该独立且可以单独回答。
-    原始问题: {question}
-    请以JSON列表格式输出子问题:
-    ["子问题1", "子问题2", "子问题3", ...]
-    """,
-    input_variables=["question"]
-)
-
-llm = OpenAI(temperature=0.7)
-
-original_question = "如何搭建一个高性能的RAG系统？需要考虑哪些技术选型和优化策略？"
-
-#分解问题
-sub_questions = llm(decompose_prompt.format(question=original_question))
-sub_questions = json.loads(sub_questions)
-
-#步骤2: 对每个子问题进行RAG检索和回答
-sub_answers = []
-for sub_q in sub_questions:
-    # 检索相关文档
-    relevant_docs = vector_db.search(sub_q, top_k=3)
-    # 生成子答案
-    answer_prompt = f"""
-    基于以下文档，回答问题: {sub_q}
-    文档内容:
-    {relevant_docs}
-    请简洁明确地回答:
-    """
-    sub_answer = llm(answer_prompt)
-    sub_answers.append({
-        "question": sub_q,
-        "answer": sub_answer
-    })
-
-#步骤3: 综合所有子答案
-synthesis_prompt = f"""
-你是一个专业的技术专家。现在你需要基于以下子问题和对应的答案，
-综合生成一个完整、有条理的回答。
-
-原始问题: {original_question}
-
-子问题和答案:
-{json.dumps(sub_answers, ensure_ascii=False, indent=2)}
-
-请生成一个结构清晰、逻辑连贯的最终答案:
-"""
-
-final_answer = llm(synthesis_prompt)
-print(final_answer)
+   <!-- 引入elasticsearch -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-elasticsearch</artifactId>
+        </dependency>
 ```
 
-#### 问答转化
+#### 流程
 
-你在图书馆找书，直接冲过去问管理员："2023年10月发布的那个新的React框架叫什么？"管理员一脸懵逼。但如果你先退一步问："最近有哪些新的React框架？"然后再缩小范围
+混合检索融合两者的优势，保持语义理解能力的同时保留关键词匹配的精确性，从而提高检索结果的**召回率**（Recall）和**排序质量**（Ranking Quality）
 
-**Step Back Prompting就是这个道理**——不直接回答具体问题，而是先生成一个更抽象、更通用的"回退问题"，从更高层次理解用户意图，然后再回答原问题。
+混合检索的常见做法就是**并行多路召回 + 结果融合**
+
+同一个查询同时送入：**关键词检索模块**（如 Elasticsearch / BM25）、**向量检索模块**（如 Milvus / FAISS / PgVector），然后再对对两路结果进行融合排序。
+
+- **加权求和（Score Weighting）**`最终得分 = α × 向量得分 + (1−α) × 关键词得分`（需归一化得分，α 通常通过实验调优）
+- **重排序，**包括RRF、Cross-Encoder
 
 ```
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-#Step 1: 定义Step Back提示词模板
-step_back_template = """你是一个世界知识专家。你的任务是把具体问题转化为更通用的回退问题。
-
-示例：
-原问题：特斯拉Model 3在2023年Q4的销量是多少？
-回退问题：特斯拉Model 3历年的销量趋势和数据有哪些？
-
-原问题：张三在2020-2022年担任什么职位？
-回退问题：张三的职业生涯发展轨迹是怎样的？
-
-现在请处理这个问题：
-原问题：{original_question}
-回退问题："""
-
-llm = ChatOpenAI(model="gpt-4", temperature=0.3)
-step_back_prompt = ChatPromptTemplate.from_template(step_back_template)
-
-#Step 2: 生成回退问题
-def generate_step_back_question(original_q):
-    chain = step_back_prompt | llm
-    response = chain.invoke({"original_question": original_q})
-    return response.content
-
-#Step 3: 使用回退问题进行RAG检索
-from langchain.vectorstores import FAISS
-from langchain.embeddings import OpenAIEmbeddings
-
-def step_back_rag(original_question, vectorstore):
-    # 生成回退问题
-    step_back_q = generate_step_back_question(original_question)
-    print(f"📝 回退问题: {step_back_q}")
-    # 用回退问题检索
-    docs = vectorstore.similarity_search(step_back_q, k=5)
-    context = "\n\n".join([doc.page_content for doc in docs])
-    # 最终回答
-    final_prompt = f"""基于以下上下文信息，回答问题。
+@GetMapping("/hybridchat")
+public String hybridchat(@RequestParam("query") String query) throws Exception {
+    log.info("========开始执行混合检索===========");
+    // 1. 向量检索获取相似文档
+    List<Document> vectorDocs = embeddingService.similarSearch(query);
     
-上下文：
-{context}
+    log.info("向量查询检索到 {} 个相关文档，chunkId列表：{}",
+            vectorDocs.size(),
+            vectorDocs.stream()
+                    .map(doc -> doc.getMetadata().getOrDefault("chunkId", "unknown").toString())
+                    .collect(Collectors.joining(", ")));
 
-回退问题：{step_back_q}
-原问题：{original_question}
 
-请给出准确、详细的回答："""
-    response = llm.invoke(final_prompt)
-    return response.content
+    // 2. ES 关键词检索
+    List<EsDocumentChunk> keywordDocs = esRagService.searchByKeyword(query, 5, true);
+    
+    log.info("ES 关键词查询检索到 {} 个相关文档，chunkId列表：{}",
+            keywordDocs.size(),
+            keywordDocs.stream()
+                    .map(doc -> doc.getMetadata().getOrDefault("chunkId", "unknown").toString())
+                    .collect(Collectors.joining(", ")));
 
-#使用示例
-question = "DeepSeek在2024年1月发布的模型性能如何？"
-answer = step_back_rag(question, my_vectorstore)
-print(f"✅ 答案: {answer}")
+    // 3. 根据 id 去重并合并文档
+    Map<String, String> idToContent = new LinkedHashMap<>();
+
+    // 向量检索文档
+    for (Document doc : vectorDocs) {
+        idToContent.putIfAbsent(doc.getId(), doc.getText());
+    }
+
+    // ES 关键词检索文档
+    for (EsDocumentChunk doc : keywordDocs) {
+        idToContent.putIfAbsent(doc.getId(), doc.getContent());
+    }
+	
+	
+	//RRF融合排序
+    List<String> mergedContents = rrfFusion(vectorDocs, keywordDocs, 5);
+    log.info("RRF 融合后共 {} 个相关文档块。", mergedContents.size());
+
+//        List<String> mergedContents = new ArrayList<>(idToContent.values());
+//        log.info("共检索到 {} 个相关文档块（向量 + 关键词融合）。", mergedContents.size());
+
+    // 4. 构建提示词模板
+    String promptTemplate = """
+            请基于以下提供的参考文档内容，回答用户的问题。
+            如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+            如果有了参考文档内容，请务必尽量回答问题。有可能用户的输入比较随意，你可以先尝试回答用户的问题，猜测他的实际需求，先给出回复，你需要尽量去贴合用户的问题需求。
+                            
+            参考文档:
+            {documents}
+                            
+            用户问题: {question}
+                           
+            """;
+
+    // 5. 拼接文档内容
+    String documentContent = String.join("\n\n=========文档分隔线===========\n\n", mergedContents);
+    log.info("查询到的文档信息：{}", documentContent);
+
+    // 6. 填充模板参数
+    PromptTemplate prompt = new PromptTemplate(promptTemplate);
+    Prompt realPrompt = prompt.create(Map.of("documents", documentContent, "question", query));
+
+    // 7. 调用大模型生成回答
+    String text = chatClient.prompt(realPrompt).call().chatResponse().getResult().getOutput().getText();
+
+    return text;
 ```
-
-**适用场景**
-
-✅ **非常适合：**
-
-- 需要多步推理的复杂问题
-- 时间序列相关查询（"最近"、"历年"、"趋势"）
-- 需要理解高层概念的问题
-
-❌ **不太适合：**
-
-- 简单的事实查询（"北京是中国的首都吗？"）
-- 需要实时数据的场景
-- 计算密集型任务
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-### 混合检索
 
 ![image.webp](https://img.f3f3.top/picgo/1784369806943_image.webp)
 
-传统RAG只用向量检索(语义匹配），对关键词精确匹配效果差。本系统采用语义检索+关键词检索双路召回+
-RRF 融合排序：
+### 重排序
 
-## 
+#### RRF算法
 
+**一个文档在多个排序列表中排名越靠前、出现次数越多其融合得分就越高。**
 
-
-
-
-## 长期记忆
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## 工具
-
-### Tool
-
-Tool = API 的抽象,tool就是调用后端接口的能力：post，get
+1. 无需原始分数**：仅依赖排名，适用于异构系统（如传统 BM25 + 向量检索）。
+1. **对高排名更敏感**：靠前的排名对得分贡献更大（因为是倒数关系）。
+1. **简单高效**：计算开销小，易于实现。
+1. **实证效果好**：在 TREC 等标准评测中表现优异，尤其适合多阶段检索架构。
 
 ```
-{
-  "name": "get_hot_music",
-  "description": "获取热榜音乐"
+**
+ * RRF 算法融合向量检索和关键词检索结果
+ * 公式：RRF Score = Σ(1/(k + rank_i))，其中 k 为常数（通常取60），rank_i 为文档在第i个检索结果中的排名
+ */
+private List<String> rrfFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, int topK) {
+    // 常数 k，控制低排名文档的权重
+    final int K = 60;
+    // 存储每个文档ID的RRF得分
+    Map<String, Double> rrfScores = new HashMap<>();
+    // 存储文档ID到chunkId的映射
+    Map<String, String> idToChunkId = new HashMap<>();
+
+    // 处理向量检索结果（排名从1开始）
+    for (int i = 0; i < vectorDocs.size(); i++) {
+        Document doc = vectorDocs.get(i);
+        String docId = doc.getId();
+        // 获取元数据中的chunkId
+        String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
+        idToChunkId.put(docId, chunkId);
+        // 排名从1开始
+        int rank = i + 1;
+        double score = 1.0 / (K + rank);
+        rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
+    }
+
+    // 处理关键词检索结果（排名从1开始）
+    for (int i = 0; i < keywordDocs.size(); i++) {
+        EsDocumentChunk doc = keywordDocs.get(i);
+        String docId = doc.getId();
+        // 获取元数据中的chunkId
+        String chunkId = doc.getMetadata().getOrDefault("chunkId", "unknown").toString();
+        idToChunkId.put(docId, chunkId);
+        // 排名从1开始
+        int rank = i + 1;
+        double score = 1.0 / (K + rank);
+        rrfScores.put(docId, rrfScores.getOrDefault(docId, 0.0) + score);
+    }
+
+    // 收集所有文档ID并按RRF得分降序排序，同时限制返回topK条
+    List<String> sortedDocIds = rrfScores.entrySet().stream()
+            .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+            .map(Map.Entry::getKey)
+            .limit(topK)
+            .collect(Collectors.toList());
+
+    // 打印每个文本块的chunkId和分数
+    String scoresLog = sortedDocIds.stream()
+            .map(docId -> {
+                String chunkId = idToChunkId.getOrDefault(docId, "unknown");
+                double score = rrfScores.getOrDefault(docId, 0.0);
+                return String.format("chunkId: %s, RRF Score: %.4f", chunkId, score);
+            })
+            .collect(Collectors.joining("; "));
+
+    log.info("RRF融合后top{}结果：{}", topK, scoresLog);
+
+    // 构建文档ID到内容的映射
+    Map<String, String> idToContent = new HashMap<>();
+    vectorDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getText()));
+    keywordDocs.forEach(doc -> idToContent.putIfAbsent(doc.getId(), doc.getContent()));
+
+    // 按排序后的ID提取文档内容
+    return sortedDocIds.stream()
+            .map(idToContent::get)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
 }
 ```
 
+**向量检索的文本块排序是0、5、25、15、4，而ES检索的排序是15、25、0、26、3，重排序融合之后的排序就是0、15、25、5、26**
+
+#### ReRank
+
+```
+/**
+ * 使用qwen3-rerank重排序
+ */
+private List<String> rerankFusion(List<Document> vectorDocs, List<EsDocumentChunk> keywordDocs, String query, int topK) throws Exception {
+    Map<String, String> idToContent = new LinkedHashMap<>();
+    Map<String, String> idToChunkId = new HashMap<>();
+
+    vectorDocs.forEach(doc -> {
+        String docId = doc.getId();
+        idToContent.putIfAbsent(docId, doc.getText());
+        String chunkId = doc.getMetadata().getOrDefault("chunkId", docId).toString();
+        idToChunkId.putIfAbsent(docId, chunkId);
+    });
+
+    keywordDocs.forEach(doc -> {
+        String docId = doc.getId();
+        idToContent.putIfAbsent(docId, doc.getContent());
+        String chunkId = doc.getMetadata().getOrDefault("chunkId", docId).toString();
+        idToChunkId.putIfAbsent(docId, chunkId);
+    });
+
+    List<String> documents = new ArrayList<>(idToContent.values());
+    if (documents.isEmpty()) {
+        log.info("没有检索到任何文档，无需重排序");
+        return Collections.emptyList();
+    }
+
+    String url = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
+    HttpHeaders headers = new HttpHeaders();
+    // 补充自己的apikey
+    headers.set("Authorization", "Bearer sk-xxxxxxxxxxxxxxxxxx");
+    headers.setContentType(MediaType.APPLICATION_JSON);
+
+    Map<String, Object> requestBody = new HashMap<>();
+    requestBody.put("model", "qwen3-rerank");
+
+    Map<String, Object> input = new HashMap<>();
+    input.put("query", query);
+    input.put("documents", documents);
+    requestBody.put("input", input);
+
+    Map<String, Object> parameters = new HashMap<>();
+    parameters.put("return_documents", true);
+    parameters.put("top_n", topK);
+    parameters.put("instruct", "Given a web search query, retrieve relevant passages that answer the query.");
+    requestBody.put("parameters", parameters);
+
+    HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+    RestTemplate restTemplate = new RestTemplate();
+    restTemplate.setRequestFactory(new SimpleClientHttpRequestFactory() {{
+        setConnectTimeout(5000);
+        setReadTimeout(10000);
+    }});
+
+    ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+
+    if (!response.getStatusCode().is2xxSuccessful()) {
+        throw new RuntimeException("重排序API调用失败: " + response.getStatusCode() + "，响应: " + response.getBody());
+    }
+
+    Map<String, Object> responseBody = response.getBody();
+    if (responseBody == null || !responseBody.containsKey("output")) {
+        throw new RuntimeException("API响应格式异常，缺少output字段: " + responseBody);
+    }
+
+    Map<String, Object> output = (Map<String, Object>) responseBody.get("output");
+    List<Map<String, Object>> rerankedResults = (List<Map<String, Object>>) output.get("results");
+    if (rerankedResults == null || rerankedResults.isEmpty()) {
+        log.warn("重排序返回空结果: {}", output);
+        return Collections.emptyList();
+    }
+
+    List<String> result = new ArrayList<>();
+    List<String> rankLogs = new ArrayList<>();
+
+    for (int i = 0; i < rerankedResults.size(); i++) {
+        Map<String, Object> item = rerankedResults.get(i);
+        String text = (String) ((Map<String, Object>) item.get("document")).get("text");
+        Double score = null;
+        if (item.containsKey("relevance_score")) {
+            score = ((Number) item.get("relevance_score")).doubleValue();
+        } else if (item.containsKey("score")) {
+            score = ((Number) item.get("score")).doubleValue();
+        }
+
+        if (text != null) {
+            result.add(text);
+
+            String matchedChunkId = "unknown";
+            for (Map.Entry<String, String> entry : idToContent.entrySet()) {
+                if (entry.getValue().equals(text)) {
+                    matchedChunkId = idToChunkId.getOrDefault(entry.getKey(), "unknown");
+                    break;
+                }
+            }
+
+            rankLogs.add(String.format("排名 %d: chunkId=%s, 分数=%.4f",
+                    i + 1, matchedChunkId, score != null ? score : 0.0));
+        }
+    }
+
+    log.info("qwen3-rerank重排序结果：{}", String.join("; ", rankLogs));
+    log.info("重排序后返回{}条文档，原始合并{}条", result.size(), documents.size());
+
+    return result;
+}
+```
+
+- ReRank 模型通常基于专门训练的**语义匹配模型**（如 Cross-Encoder 或特化的语义排序模型），它会同时输入**“查询 + 文本”**进行相关性评分，因此本质上**更偏向于语义层面的匹配**
+- RRF 负责“先混起来”，rerank 模型负责“再精排”
+
+### GraghRAG
+
+#### 知识图谱
+
+GraghRAG：多跳问题可采用问题拆解
+
+GraphRAG和传统RAG的主要区别就是会借助图数据库和知识图谱技术，抽取文档中的实体之间的关系，构建一个图结构，不再依赖相似度检索，而是改用图的拓扑结构来定位相关信息。
+
+**图数据库是一种专门用于存储、查询和管理图结构数据的 NoSQL 数据库**
+
+- **节点（Node）**：表示实体，如“用户”、“商品”、“城市”。
+- **边（Edge / Relationship）**：表示节点之间的关系，如“购买”、“关注”、“位于”。边是有方向的（可选），并可携带属性。
+- **属性（Property）**：键值对，用于描述节点或边的特征，如 {name: "张三", age: 30}
+
+**多跳图查询**，我们需要在 Neo4j 中执行以下逻辑：
+
+1. 找到电影《十面埋伏》
+1. 找到导演了这部电影的导演。
+1. 找出该导演还导演了哪些其他电影。
+
+#### Neo4J 部署
+
+```
+docker run \
+  --name neo4j \
+  -p 7474:7474 -p 7687:7687 \
+  -v $HOME/neo4j/data:/data \
+  -v $HOME/neo4j/logs:/logs \
+  -v $HOME/neo4j/conf:/conf \
+  -e NEO4J_AUTH=neo4j/neo4j666 \
+  -e NEO4JLABS_PLUGINS='["apoc"]' \
+  -d neo4j:5.22-community
+```
+
+**使用http://localhost:7474 访问**
+
+#### Neo4J接入
+
+##### **依赖**
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-neo4j</artifactId>
+</dependency>
+```
+
+##### **配置**
+
+```
+spring:
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: your_password
+```
+
+##### 节点
+
+```
+@Node("Director")
+public class Director {
+    @Id
+    private String name;
+
+    public Director() {
+    }
+
+    public Director(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+}
+```
+
+```
+@Node("Movie")
+public class Movie {
+    @Id
+    private String title;
+
+    private int year;
+
+    public Movie() {
+    }
+
+    public Movie(String title, int year) {
+        this.title = title;
+        this.year = year;
+    }
+
+    // Getters
+    public String getTitle() {
+        return title;
+    }
+
+    public int getYear() {
+        return year;
+    }
+}
+```
+
+##### 关系
+
+**创建 Repository(操作sql)**
+
+```
+@Repository
+public interface MovieGraphRepository extends Neo4jRepository<Movie, String> {
+    @Query("""
+            MATCH (m:Movie {title: $title}) <-[:DIRECTED]- (d:Director) -[:DIRECTED]-> (other:Movie)
+            WHERE other.title <> $title
+            RETURN d.name AS director, collect(other.title + ' (' + other.year + ')') AS otherMovies
+            """)
+    List<DirectorMoviesDto> findOtherMoviesBySameDirector(String title);
+
+}
+```
+
+**返回值我们封装成DirectorMoviesDto**
+
+```
+public class DirectorMoviesDto {
+    private String director;
+    private List<String> otherMovies;
+
+    public DirectorMoviesDto() {
+    }
+
+    public DirectorMoviesDto(String director, List<String> otherMovies) {
+        this.director = director;
+        this.otherMovies = otherMovies;
+    }
+
+    public String getDirector() {
+        return director;
+    }
+
+    public void setDirector(String director) {
+        this.director = director;
+    }
+
+    public List<String> getOtherMovies() {
+        return otherMovies;
+    }
+
+    public void setOtherMovies(List<String> otherMovies) {
+        this.otherMovies = otherMovies;
+    }
+}
+```
+
+**定义Service**
+
+```
+@Service
+public class GraphService {
+
+    @Autowired
+    private MovieGraphRepository repository;
+
+    public String retrieveContext(String movieName) {
+        //承接
+        List<DirectorMoviesDto> results = repository.findOtherMoviesBySameDirector(movieName);
+
+        if (results.isEmpty()) {
+            return "未找到导演过《" + movieName + "》的导演的其他作品。";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map<String, Object> row : results) {
+            String director = (String) row.get("director");
+            @SuppressWarnings("unchecked")
+            List<String> movies = (List<String>) row.get("otherMovies");
+            sb.append(String.format("- 导演 %s 还执导了：%s\n", director, String.join("、", movies)));
+        }
+        return sb.toString().trim();
+
+    }
+
+}
+```
+
+**定义Controller，先做数据初始化**
+
+```
+@RequestMapping("/rag/graph")
+@RestController
+public class GraphRagController {
+
+    @Autowired
+    private Neo4jTemplate neo4jTemplate;
+
+    @Autowired
+    private Neo4jClient neo4jClient;
+
+    @GetMapping("/init")
+    public String initData() {
+        // 保存节点
+        neo4jTemplate.save(new Director("张艺谋"));
+        neo4jTemplate.save(new Director("陈思诚"));
+        neo4jTemplate.save(new Movie("十面埋伏", 2004));
+        neo4jTemplate.save(new Movie("影", 2016));
+        neo4jTemplate.save(new Movie("英雄", 2002));
+        neo4jTemplate.save(new Movie("误杀", 2019));
+
+        neo4jClient.query("""
+                        MATCH (p:Director {name: $name}), (m:Movie {title: $title})
+                        MERGE (p)-[:DIRECTED]->(m)
+                        """)
+                .bind("张艺谋").to("name")
+                .bind("十面埋伏").to("title")
+                .run();
+        neo4jClient.query("""
+                        MATCH (p:Director {name: $name}), (m:Movie {title: $title})
+                        MERGE (p)-[:DIRECTED]->(m)
+                        """)
+                .bind("张艺谋").to("name")
+                .bind("影").to("title")
+                .run();
+
+        neo4jClient.query("""
+                        MATCH (p:Director {name: $name}), (m:Movie {title: $title})
+                        MERGE (p)-[:DIRECTED]->(m)
+                        """)
+                .bind("张艺谋").to("name")
+                .bind("英雄").to("title")
+                .run();
+        neo4jClient.query("""
+                        MATCH (p:Director {name: $name}), (m:Movie {title: $title})
+                        MERGE (p)-[:DIRECTED]->(m)
+                        """)
+                .bind("陈思诚").to("name")
+                .bind("误杀").to("title")
+                .run();
+
+        return "Data initialized successfully";
+    }
+}
+```
+
+**做图数据库检索及回答**
+
+```
+@RequestMapping("/rag/graph")
+@RestController
+public class GraphRagController {
+
+    @Autowired
+    private GraphService graphService;
+
+    @Autowired
+    private ChatModel chatModel;
+
+    @GetMapping("/ask")
+    public String ask(@RequestBody String movieName) {
+
+        String context = graphService.retrieveContext(movieName);
+
+        String prompt = """
+                你是一个电影知识助手，请根据以下上下文回答问题。
+                如果上下文没有足够信息，请回答“我不知道”。
+                
+                上下文：
+                %s
+                
+                问题：%s
+                回答：
+                """.formatted(context, movieName + "的导演还执导过哪些电影？");
+
+        return chatModel.call(prompt);
+    }
+}
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787885365644_image.webp)
+
+**节点**
+
+- **@Node("Movie")表示这个 Java 类对应 Neo4j 里的 Movie节点标签；**
+- **@Id表示唯一标识。这里用电影 `title`、导演 name 做主键，是为了后面能通过名字精确匹配节点**
+
+**关系**
+
+- **MovieGraphRepository负责图查询。它继承 Neo4jRepository<Movie, String>**
+- **说明主操作对象是 Movie，主键类型是 String。真正关键的是 `@Query` 里的 Cyphe**
+
+**DirectorMoviesDto 是查询结果 DTO。它把 `director` 和 `otherMovies` 封装起来，方便 Service 使用**
+
+**Service**
+
+**GraphService.retrieveContext()是 RAG 里的“检索层”。它不直接回答问题，而是把 Neo4j 查到的事实整理成文本上下文**
+
+**初始化**
+
+- **用 Neo4jTemplate.save() 保存节点。**
+- **用 `Neo4jClient.query()` 执行 Cypher，创建 `DIRECTED` 关系。**
+
+- **Repository 中写 `@Query`，完成“电影 -> 导演 -> 其他电影”的多跳查询。**
+
+- **Service 把查询结果整理成文本上下文。**
+
+- **Controller 把上下文拼进 Prompt，再调用 `ChatModel` 生成自然语言回答**
+
+### ModularRAG
+
+#### SpringAi
+
+**RetrievalAugmentationAdvisor** 封装了完整的 RAG 流程
+
+- **查询预处理（查询重写、查询扩展等）**
+- **文档检索（从向量数据库做检索）**
+- **上下文后处理（如文档合并等）**
+- **提示增强（将检索结果与用户问题合并）**
+
+```
+@GetMapping("/chatWithAdvistor")
+public String chatWithAdvistor(@RequestParam("query") String query,
+                               @RequestParam("fileName") String fileName) {
+ //问题改写
+ RewriteQueryTransformer queryTransformer = RewriteQueryTransformer.builder()
+     .chatClientBuilder(ChatClient.builder(chatModel))
+     .promptTemplate(new PromptTemplate("""
+                        Given a user query, rewrite it to provide better results when querying a {target}.                      
+                        Remove any irrelevant information, and ensure the query is concise and specific.                  
+                        如果有表述不清的内容，或者错别字，请修正，如"华子"，修改为"华为"
+                   
+                        Original query:
+                        {query}
+                        
+                        Rewritten query:
+                        """))
+                .build();
+
+//问题扩展
+        QueryExpander queryExpander = MultiQueryExpander.builder()
+                .chatClientBuilder(ChatClient.builder(chatModel))
+                .numberOfQueries(3)
+                .includeOriginal(true)
+                .build();
+
+//向量检索
+DocumentRetriever retriever = VectorStoreDocumentRetriever.builder()
+                .vectorStore(vectorStore)          // 必需：绑定向量存储
+                .topK(5)                             // 返回最相似的 5 个文档
+                .similarityThreshold(0.6)            // 相似度低于 0.6 的过滤掉
+                .filterExpression("source == 'docs.spring.io'") // 元数据过滤表达式
+                .build();
 
 
-## Harness
 
-**Agent = 模型 (Model) + Harness**
+        QueryAugmenter queryAugmenter = ContextualQueryAugmenter.builder()
+                .allowEmptyContext(true)
+                .emptyContextPromptTemplate(new PromptTemplate("请回答以下用户问题"))
+                .build();                
+                          
+					//Advisor分发地
+Advisor advisor = RetrievalAugmentationAdvisor.builder()
+        // 检索阶段：从向量库检索文档（必需）
+        .documentRetriever(retriever)   //向量库检索
+        // 查询预处理：转换查询（可选）    
+        .queryTransformers(queryTransformer)    ////问题改写利用提示词模板
+        // 查询预处理：扩展查询（可选）  		
+        .queryExpander(queryExpander)    //一个查询扩展成多个查询
+        // 后处理阶段：合并文档（当使用查询扩展时推荐）
+        .documentJoiner(documentJoiner)    //文档合并
+        // 生成阶段：构建增强提示词（可选，有默认实现）
+        .queryAugmenter(queryAugmenter)				//构建增强提示词
+        .build();
+        
+        //响应数据
+   return chatClient.prompt(query).advisors(advisor).call().content();
+```
 
-- 模型：负责思考、推理、决策
-- Harness：负责**稳定、不崩、不跑偏、可持久、可恢复**
+```
+    String answer = chatClient.prompt()
+               .advisors(retrievalAugmentationAdvisor)
+               //元数据过滤
+               .advisors(a -> a.param(VectorStoreDocumentRetriever.FILTER_EXPRESSION, "fileName == '" + fileName + "'"))
+               .user(query)
+               .call()
+               .content();
+       return answer;
+}
+```
+
+- **检索前用 QueryTransformer` 和 `QueryExpander 改造问题**
+- **检索中用 DocumentRetriever 从向量库取文档**
+- **检索后用 DocumentJoiner 合并、去重、排序**
+- **生成前用 `QueryAugmenter` 把文档和问题拼成最终 Prompt**
+
+```mermaid
+flowchart TD
+    A[用户提问] --> B{是否配置 QueryTransformer}
+    B -->|是| C[压缩/改写/翻译问题]
+    B -->|否| D[使用原问题]
+    C --> E{是否配置 QueryExpander}
+    D --> E
+    E -->|是| F[扩展成多个查询]
+    E -->|否| G[单查询]
+    F --> H[DocumentRetriever 检索文档]
+    G --> H
+    H --> I[DocumentJoiner 合并去重排序]
+    I --> J[DocumentPostProcessor 可选后处理]
+    J --> K[QueryAugmenter 拼接上下文 Prompt]
+    K --> L[大模型生成答案]
+```
+
+#### LangChain4j
+
+##### 初识
+
+```mermaid
+flowchart LR
+    A[用户消息 UserMessage] --> B[AiServices 调用]
+    B --> C[RetrievalAugmentor]
+    C --> D[DefaultRetrievalAugmentor]
+
+    D --> E[QueryTransformer<br/>查询转换]
+    E --> F[QueryRouter<br/>查询路由]
+    F --> G[ContentRetriever<br/>内容检索]
+    G --> H[ContentAggregator<br/>内容聚合/融合/重排]
+    H --> I[ContentInjector<br/>内容注入]
+    I --> J[增强后的 UserMessage]
+    J --> K[ChatModel 生成回答]
+```
+
+- **LangChain4J中提供了RetrievalAugmentor接口，**
+- **默认的实现DefaultRetrievalAugmentor，和Spring AI中的RetrievalAugmentationAdvisor类似**
+
+```
+DefaultRetrievalAugmentor augmentor =DefaultRetrievalAugmentor.builder()
+// 1. ContentRetriever - 从向量数据库或其他数据源检索内容(必需)
+.contentRetriever(EmbeddingStoreContentRetriever.builder()
+        .embeddingStore(embeddingStore) // 向量数据库
+        .embeddingModel(embeddingModel) // 向量模型
+        .maxResults(5)                 // 返回Top-K结果
+        .minScore(0.7)               // 最小相似度阈值
+        .build())
+
+// 2. QueryTransformer - 查询转换器(可选)
+.queryTransformer(queryTransformer)
+
+// 3. QueryRouter - 查询路由器(可选)
+.queryRouter(queryRouter)
+
+// 4. ContentAggregator - 内容聚合器(可选)
+.contentAggregator((contentAggregator)
+
+// 5. ContentInjector - 内容注入器(可选)
+.contentInjector(contentInjector)
+
+.build();
+```
+
+**DefaultRetrievalAugmentor注入到AiServices中**：
+
+```
+AiServices.builder(LangChainAiService.class)
+        .chatModel(chatModel)
+        .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
+        .retrievalAugmentor(DefaultRetrievalAugmentor.builder().build())
+        .build();
+         //8.调用AI服务
+  return langChainAiService.chat(query);
+```
+
+##### **转换**
+
+**QueryTransformer是检索前处理。它的接口返回的是 Collection<Query>，可以“改写一个问题，也可以“扩展成多个问题”。**
+
+| 类名 | 作用 | 说明 |
+|:-:|---|---|
+| DefaultQueryTransformer` | 不修改问题 | 原样返回，不做任何处理 |
+| `CompressingQueryTransformer` | 压缩追问 | 结合历史对话，将追问压缩成独立问题 |
+| `CompressionQueryTransformer` | 压缩问题 | 将当前问题整理为更简洁、独立的表达 |
+| `ExpandingQueryTransformer` | 扩展问题 | 把一个问题扩展成多个相关问题 |
+| `MultiQueryExpander` | 多查询扩展 | 生成多个相关查询，用于提升召回或覆盖面 |
+
+
+
+##### 检索
+
+- **ContentRetriever必须要有**
+- **ContentRetriever是QueryRouter接口实现，路由到检索路径**
+- **ContentRetriever和QueryRouter只能传一个会覆盖**
+- **检索器需要指定向量模型与向量存储**
+
+```
+ContentRetriever retriever = EmbeddingStoreContentRetriever.builder()
+		// 向量数据库实例
+        .embeddingStore(embeddingStore)
+        
+        // 向量模型(用于查询向量化)
+        .embeddingModel(embeddingModel)
+        
+        // 返回Top-K结果，默认3
+        .maxResults(5)
+        
+        //最小相似度阈值(0.0-1.0)，低于此分数的结果会被过滤
+        .minScore(0.7)
+        .build();
+```
+
+**EmbeddingStoreContentRetriever用于从向量数据库检索相关内容的核心组件实现了 ContentRetriever 接口**
+
+**向量存储**
+
+默认实现基于内存的
+
+https://github.com/langchain4j/langchain4j/tree/main/docs/docs/integrations/embedding-stores
+
+**向量模型**
+
+https://github.com/langchain4j/langchain4j/tree/main/docs/docs/integrations/embedding-models
+
+
+
+```mermaid
+flowchart LR
+    A[Query.text] --> B[EmbeddingModel<br/>向量化问题]
+    B --> C[EmbeddingSearchRequest]
+    A --> C
+    C --> D[maxResults]
+    C --> E[minScore]
+    C --> F[filter]
+    C --> G[EmbeddingStore.search]
+    G --> H[List Content]
+```
+
+##### WebSearch
+
+**WebSearchContentRetriever 是 LangChain4j 框架中用于从互联网搜索引擎检索实时信息的 RAG 组件**
+
+
+
+##### 路由
+
+ **Query 应该交给哪些检索器。**
+
+**默认实现**
+
+```
+QueryRouter router = new DefaultQueryRouter(vectorRetriever, webRetriever);
+```
+
+**返回值是集合**
+
+```
+QueryRouter queryRouter = query -> {
+    String text = query.text();
+
+    if (text.contains("最新") || text.contains("今天") || text.contains("现在")) {
+        return List.of(webRetriever);
+    }
+
+    return List.of(vectorRetriever);
+};
+```
+
+**智能路由**
+
+```
+LanguageModelQueryRouter router = LanguageModelQueryRouter.builder()
+        .chatModel(chatModel)
+        .retriever(vectorRetriever, "适合查询本地知识库、产品文档、历史资料")
+        .retriever(webRetriever, "适合查询实时新闻、今天、最新信息")
+        .build();
+```
+
+##### **融合**
+
+**ContentAggregator 负责把多路检索结果合成最终的一组内容**
+
+```mermaid
+flowchart TD
+    A[Query1 -> vectorRetriever -> contents] --> E[ContentAggregator]
+    B[Query1 -> webRetriever -> contents] --> E
+    C[Query2 -> vectorRetriever -> contents] --> E
+    D[Query2 -> webRetriever -> contents] --> E
+    E --> F[最终排序后的 Content 列表]
+```
+
+**两段rrf融合**
+
+- **第一阶段先融合同一个 Query 下多个 Retriever 的结果**
+- **第二阶段再融合多个 Query 的结果**
+
+**ReRankingContentAggregator在RRF融合之后的ReRank**
+
+```
+ScoringModel scoringModel = JinaScoringModel.builder()
+        .apiKey(System.getenv("JINA_API_KEY"))
+        .modelName("jina-reranker-v2-base-multilingual")
+        .build();
+
+ContentAggregator aggregator = ReRankingContentAggregator.builder()
+        .scoringModel(scoringModel)
+        .minScore(0.6)
+        .maxResults(5)
+        .build();
+```
+
+##### 插入
+
+- **把检索到的内容注入用户消息**
+- **Spring AI 是生成一个增强后的 Query，LangChain4j 是增强 UserMessage**
+
+```
+ContentInjector contentInjector = DefaultContentInjector.builder()
+        .promptTemplate(PromptTemplate.from("""
+                {{userMessage}}
+
+                请只根据以下参考资料回答。如果资料不足，请说明不知道。
+
+                {{contents}}
+                """))
+        .metadataKeysToInclude(List.of("source", "file_name"))
+        .build();
+```
+
+**`DefaultRetrievalAugmentor` 的核心源码在 augment()**
+
+**先把用户消息封装成 Query**
+
+**process()方法**
+
+**当只有一个 Query 和一个 Retriever 时，它直接同步执行；当出现多 Query 或多 Retriever 时，自动用线程池并行检索**
+
+​      **加载文档**loadDocument(filePath, new ApacheTikaDocumentParser())
+
+- `QueryTransformer` 做压缩或扩展
+- 通过 `QueryRouter` 决定走哪些检索器；
+- 每个 `ContentRetriever` 从向量库、Web、SQL、图数据库等数据源取回内容；`ContentAggregator` 对多路结果做 RRF 融合或 rerank；最后 `ContentInjector` 把内容拼回用户消息，再交给大模型生成回答。
+
+
+```
+@RequestMapping("/retrieve1")
+    public String retrieve1(HttpServletResponse response, String query, String filePath) {
+        response.setCharacterEncoding("UTF-8");
+
+        // 1. 配置 Embedding 模型
+        OpenAiEmbeddingModel embeddingModel = OpenAiEmbeddingModel.builder()
+                .modelName("text-embedding-v3") 
+                .dimensions(768)
+                .baseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1")
+                .maxSegmentsPerBatch(9) 
+                .apiKey("sk-0227f9a97bef4f2c8fc899d82831aa25")
+                .build();
+
+        // 2. 加载文档并生成 Embeddings
+        InMemoryEmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
+        EmbeddingStoreIngestor.builder()
+                .documentSplitter(DocumentSplitters.recursive(300, 50))
+                .embeddingModel(embeddingModel)
+                .embeddingStore(embeddingStore)
+                .build()
+                .ingest(loadDocument(filePath, new ApacheTikaDocumentParser()));
+
+        // 3. 构建 RAG 增强器（使用链式调用）
+        DefaultRetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
+                .contentRetriever(EmbeddingStoreContentRetriever.builder()
+                        .embeddingStore(embeddingStore)
+                        .embeddingModel(embeddingModel)
+                        .maxResults(5)
+                        .minScore(0.7)
+                        .build())
+                
+  .contentInjector(new DefaultContentInjector(new PromptTemplate("""
+                          ## 角色定位
+                         你是一位专业的RAG问答助手。请根据提供的上下文信息，详细、准确地回答用户的问题。如果参考文档没有内容，请务必不要胡编乱造，请直接说明"没有找到相关信息"。
+                        
+                         ## 任务要求：
+                         1. 请基于以下提供的参考文档内容，回答用户的问题。
+                         2. 如果参考文档中没有相关信息，请直接说明"没有找到相关信息"，不要编造内容。
+                         3. 如果有了参考文档内容，请务必尽量回答问题。有可能用户的输入比较随意，你可以先尝试回答用户的问题，猜测他的实际需求，先给出回复，你需要尽量去贴合用户的问题需求。
+                        
+                         ## 格式要求：
+                         1. 你的所有回答必须使用Markdown格式进行排版。
+                         2. 上下文信息中包含了图片描述标签，格式为：`<image src="URL" description="多模态描述"></image>`。
+                         3. 如果图片与用户提问高度相关，请将此标签转换为标准的Markdown图片格式 `![图片](URL)`。
+                         4. 仅在必要时包含图片，请注意千万不要输出重复的内容和图片，图片确保最终生成的URL不要重复。
+                        
+                         ## 参考文档:
+                        {{contents}}
+                        
+                         ## 用户问题:
+                         {{userMessage}}
+                        
+                         注意：如果参考文档下面的内容为空，请直接回答“没有找到相关信息”。
+                        """)))
+                .build();
+
+        // 4. 构建 AI 服务并返回结果
+        return AiServices.builder(LangChainAiService.class)
+                .chatModel(chatModel)
+                .retrievalAugmentor(retrievalAugmentor)
+                .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
+                .build()
+                .chat(query);
+    }
+
+```
+
+### 多模态RAG
+
+#### 调用
+
+**图片 + 问题 -> 多模态大模型 -> 图片描述文本**
+
+```
+    @RequestMapping("/callWithOpenAI")
+    public String callWithOpenAI() throws URISyntaxException, MalformedURLException {
+
+        OpenAiChatOptions options = OpenAiChatOptions.builder().temperature(0.2d).model("qwen3-vl-plus").build();
+        OpenAiChatModel multimodalChatModel = OpenAiChatModel.builder().openAiApi(OpenAiApi.builder().baseUrl("https://dashscope.aliyuncs.com/compatible-mode/").apiKey(new SimpleApiKey("sk-8ef405c4686e456e91f6698272253126")).build()).defaultOptions(options).build();
+
+        List<Media> mediaList = List.of(new Media(MimeTypeUtils.IMAGE_PNG, new URI("https://cdn.nlark.com/yuque/0/2025/png/5378072/1762350625634-664f1db7-e1c9-4daa-ab8e-81b6b7da5a68.png").toURL().toURI()));
+
+        var userMessage = UserMessage.builder().text("请非常简要的描述一下你看到的这个图片?").media(mediaList).build();
+        var response = multimodalChatModel.call(new Prompt(List.of(userMessage)));
+
+        return response.getResult().getOutput().getText();
+    }
+```
+
+- **设置模型，tempreture参数控制回答随机性，越低越稳定**
+- **UserMessage需要填写两个参数，一个是提示词，就是你需要对这个图片怎么样去分析**
+- **media表示你真正的图片资源。**
+
+**Spring Ai Alibaba提供的DashScopeChatMode**
+
+```
+@Autowired
+private ChatModel chatModel;
+
+@RequestMapping("/callWithSpringAiAlibaba")
+public String callWithSpringAiAlibaba() throws URISyntaxException, MalformedURLException {
+    List<Media> mediaList = List.of(new Media(MimeTypeUtils.IMAGE_PNG, new URI("https://cdn.nlark.com/yuque/0/2025/png/5378072/1762350625634-664f1db7-e1c9-4daa-ab8e-81b6b7da5a68.png").toURL().toURI()));
+
+    var userMessage = UserMessage.builder().text("请详细的描述一下你看到的这个图片?").media(mediaList).build();
+
+    return chatModel.call(new Prompt(userMessage, DashScopeChatOptions.builder().withModel("qwen3-vl-plus").withMultiModel(true).build())).getResult().getOutput().getText();
+}
+```
+
+**使用chatModel时，必须要增加参数`withMultiModel(true)`**
+
+#### Mimo部署
+
+**MinIO 是一个高性能、开源的对象存储系统，兼容 Amazon S3 云存储服务接口**
+
+```
+sudo docker run -d \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  --name minio-server \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin" \
+  -v /mnt/data/minio:/data \
+  minio/minio server /data --console-address ":9001"
+```
+
+#### 接入Mimo
+
+```
+<dependency>
+    <groupId>io.minio</groupId>
+    <artifactId>minio</artifactId>
+    <version>8.5.1</version>
+</dependency>
+```
+
+```
+minio:
+  url: http://localhost:9001 
+  accessKey: minioadmin 
+  secretKey: minioadmin 
+  bucketName: a-bucket 
+  endpoint: http://localhost:9001
+```
+
+**定义配置类**
+
+```
+@Configuration
+public class MinioConfiguration {
+
+    private static final Logger logger = LoggerFactory.getLogger(MinioConfiguration.class);
+
+    @Value("${minio.endpoint}")
+    private String endpoint;
+
+    @Value("${minio.access-key}")
+    private String accessKey;
+
+    @Value("${minio.secret-key}")
+    private String secretKey;
+
+    @Bean
+    @Lazy
+    public MinioClient minioClient() {
+        try {
+            return MinioClient.builder()
+                    .endpoint(endpoint)
+                    .credentials(accessKey, secretKey)
+                    .build();
+        } catch (Exception e) {
+            logger.warn("Failed to create MinIO client: {}. MinIO functionality will be unavailable.", e.getMessage());
+            return null;
+        }
+    }
+}
+```
+
+**定义minIO工具类**
+
+```
+@Service
+public class MinioService {
+
+    private final MinioClient minioClient;
+
+    @Value("${minio.bucket}")
+    private String bucketName;
+
+    @Value("${minio.endpoint}")
+    private String endpoint;
+
+
+    public MinioService(MinioClient minioClient) {
+        this.minioClient = minioClient;
+    }
+
+    // 确保 bucket 存在
+    private void createBucketIfNotExists() throws Exception {
+        if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) {
+            minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+        }
+    }
+
+    // 上传文件
+    public String uploadFile(MultipartFile file, String objectName) throws Exception {
+        createBucketIfNotExists();
+        minioClient.putObject(PutObjectArgs.builder()
+                .bucket(bucketName)
+                .object(objectName)
+                .stream(file.getInputStream(), file.getSize(), -1)
+                .contentType(file.getContentType())
+                .build());
+        return String.format("%s/%s/%s", endpoint, bucketName, objectName);
+
+    }
+
+	/**
+     * 上传文件
+     */
+    public String uploadFile(String objectName, byte[] content, String contentType) throws Exception {
+        createBucketIfNotExists();
+        try (InputStream stream = new ByteArrayInputStream(content)) {
+            minioClient.putObject(
+                    PutObjectArgs.builder()
+                            .bucket(bucketName)
+                            .object(objectName)
+                            .stream(stream, content.length, -1)
+                            .contentType(contentType)
+                            .build()
+            );
+
+            return String.format("%s/%s/%s", endpoint, bucketName, objectName);
+        }
+    }
+
+
+    // 下载文件（返回 InputStream）
+    public InputStream downloadFile(String objectName) throws Exception {
+        GetObjectResponse response = minioClient.getObject(
+                GetObjectArgs.builder()
+                        .bucket(bucketName)
+                        .object(objectName)
+                        .build());
+        return response;
+    }
+
+    // 删除文件
+    public void deleteFile(String objectName) throws Exception {
+        minioClient.removeObject(RemoveObjectArgs.builder()
+                .bucket(bucketName)
+                .object(objectName)
+                .build());
+    }
+
+    // 生成临时下载链接（带签名，有效期 7 天）
+    public String getPresignedUrl(String objectName) throws Exception {
+        return minioClient.getPresignedObjectUrl(
+                GetPresignedObjectUrlArgs.builder()
+                        .method(Method.GET)
+                        .bucket(bucketName)
+                        .object(objectName)
+                        .expiry(7, TimeUnit.DAYS)
+                        .build());
+    }
+}
+```
+
+**Controller**
+
+```
+@RestController
+@RequestMapping("/files")
+public class FileController {
+
+    @Autowired
+    private MinioService minioService;
+
+    @PostMapping("/upload")
+    public ResponseEntity<String> uploadFile(@RequestParam("file") MultipartFile file) {
+        try {
+            String objectName = System.currentTimeMillis() + "_" + file.getOriginalFilename();
+            minioService.uploadFile(file, objectName);
+            return ResponseEntity.ok("上传成功: " + objectName);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("上传失败: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/download-url/{objectName}")
+    public ResponseEntity<String> getDownloadUrl(@PathVariable String objectName) {
+        try {
+            String url = minioService.getPresignedUrl(objectName);
+            return ResponseEntity.ok(url);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("生成下载链接失败");
+        }
+    }
+}
+
+```
+
+![image.webp](https://img.f3f3.top/picgo/1787960354447_image.webp)
 
 
 
 
 
+### Agentic RAG
 
+## Agent
 
+### 初识
 
+一个Agent =
 
-## Skill
+1. **大脑（LLM）**
+1. **手脚（Tools / MCP）**
+1. **记忆（Memory）**
+1. **规划（Planning / Workflow）**
 
+### ReAct
 
-
-
-
-
-
-## AgentScope
-
-
-
-
-
-
-
-
-
-
-
-
-
-## 大模型微调
-
-## 解决问题方式
-
-### ReAct边想边做
-
-#### 核心流程
+#### 初识
 
 **Thought → Action → Observation → Thought → … → 完成**
 
@@ -5194,13 +6425,413 @@ Tool = API 的抽象,tool就是调用后端接口的能力：post，get
 - **Action（行动）**：调用工具/API
 - **Observation（观察）**：拿到返回结果，进入下一轮思考
 
-#### 特点
+**特点**
 
 - ✅ **动态自适应**：每一步都根据最新结果调整策略
 - ✅ **适合不确定/探索性任务**：实时信息、多跳问答、环境多变
 - ❌ **效率低、调用多**：走一步看一步，容易绕圈、目标漂移
 
-### PlanAct先规划，后执行
+#### SpringAi
+
+- **要让LLM按照ReAct的方式运行**
+- **通过while让Agent的"思考结果"、"行动"等串起来**
+- **默认情况下spring ai会自动调用工具，所以我们需要把他设置为不自动调用**
+
+```
+@GetMapping("/chat")
+public String chat(String conversationId) {
+    //定义ChatOptions
+    ChatOptions chatOptions = ToolCallingChatOptions.builder()
+            //指定工具
+            .toolCallbacks(ToolCallbacks.from(new StockTools()))
+            //指定不自动执行工具
+            .internalToolExecutionEnabled(false)
+            .build();
+
+    //定义提示词，要求按照React架构运行
+    Prompt prompt = new Prompt(
+            List.of(new SystemMessage("你是一个基于React架构（Reasoning-Act-Observation）的智能助手，你擅长使用工具帮我解决问题。" +
+                    "你的工作流程是：" +
+                    "1、思考：先根据用户的提问进行思考，推理出下一步需要进行的具体系统" +
+                    "2、行动：做具体的行动，这一步可以使用工具" +
+                    "3、观察：记录前一步行动的结果。你可以进行多轮思考和行动。如果要使用工具，请务必调用工具，不要自己随便捏造结果。"), new UserMessage("帮我分析最近三个月特斯拉（TSLA）的股价走势，并结合新闻事件解释可能的影响因素。")),
+            chatOptions);
+
+    //添加提示词到记忆
+    chatMemory.add(conversationId, prompt.getInstructions());
+
+    Prompt promptWithMemory = new Prompt(chatMemory.get(conversationId), chatOptions);
+
+    //调用模型
+    ChatResponse chatResponse = chatModel.call(promptWithMemory);
+
+    //添加模型返回结果到记忆
+    chatMemory.add(conversationId, chatResponse.getResult().getOutput());
+
+    //循环处理工具调用
+    while (chatResponse.hasToolCalls()) {
+        //执行工具调用
+        ToolExecutionResult toolExecutionResult = toolCallingManager.executeToolCalls(promptWithMemory,
+                chatResponse);
+
+        //添加工具调用结果到记忆
+        chatMemory.add(conversationId, toolExecutionResult.conversationHistory()
+                .get(toolExecutionResult.conversationHistory().size() - 1));
+
+        //创建新的提示词
+        promptWithMemory = new Prompt(chatMemory.get(conversationId), chatOptions);
+
+        //调用模型
+        chatResponse = chatModel.call(promptWithMemory);
+
+        //添加模型返回结果到记忆
+        chatMemory.add(conversationId, chatResponse.getResult().getOutput());
+    }
+
+    for (Message message11 : chatMemory.get(conversationId)) {
+        System.out.println(message11);
+    }
+
+    return chatResponse.getResult().getOutput().getText();
+}
+```
+
+#### Alibaba
+
+##### 初识
+
+**ReactAgent** 是基于 **Graph 运行**
+
+**持续的推理和工具调用的循环**
+
+- **Model Node (模型节点):上下文（包括历史对话、工具描述和最近的观察结果）进行推理和决策，决定下一步是使用哪个工具、使用什么参数**
+- **Tool Node (工具节点):会执行实际的工具函数调用，并捕获执行结果**
+- **Hook Nodes (钩子节点):关键位置（如模型调用前、工具调用后）插入自定义的逻辑类似advisor**
+
+![image.webp](https://img.f3f3.top/picgo/1787965273931_image.webp)
+
+```
+<dependency>  <groupId>com.alibaba.cloud.ai</groupId>  <artifactId>spring-ai-alibaba-agent-framework</artifactId>  <version>1.1.0.0</version></dependency> <dependency>  <groupId>com.alibaba.cloud.ai</groupId>  <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>  <version>1.1.0.0</version></dependency>
+```
+
+##### **非流式**
+
+```
+@GetMapping("/chat")
+public String chat(String conversationId) throws GraphRunnerException {
+
+    String systemPrompt = String.format("你是一个基于React架构（Reasoning-Act-Observation）的智能助手，你擅长使用工具帮我解决问题。" +
+            "你的工作流程是：" +
+            "1、思考：先根据用户的提问进行思考，推理出下一步需要进行的具体系统" +
+            "2、行动：做具体的行动，这一步可以使用工具" +
+            "3、观察：记录前一步行动的结果。你可以进行多轮思考和行动。如果要使用工具，请务必调用工具，不要自己随便捏造结果。");
+		
+		//创建Agent客户端
+    ReactAgent agent = ReactAgent.builder()
+            .name("executor")
+            .model(chatModel)
+            
+            //可以传多个工具
+            //StockTools类里有多个@Tool注解        
+            .tools(ToolCallbacks.from(new StockTools()))
+            .systemPrompt(systemPrompt)
+            .saver(new MemorySaver())
+            .build();
+		
+		//给这次执行绑定会话 ID记忆
+    RunnableConfig config = RunnableConfig.builder()
+            .threadId(conversationId)
+            .build();
+            
+    AssistantMessage chatResponse = agent.call("帮我分析最近三个月特斯拉（TSLA）的股价走势，并结合新闻事件解释可能的影响因素。", config);
+    return chatResponse.getText();
+}
+```
+
+##### 流式
+
+- **返回结构是：Flux<NodeOutput> ，因为他是图结构，需要将每个节点的输出都合并成一个流**
+- **需要判断当前流是否是StreamingOutput 还是普通的节点输出才可以。**
+
+```
+return agent.stream("帮我分析最近三个月特斯拉（TSLA）的股价走势，并结合新闻事件解释可能的影响因素。", config)
+                .map(output -> {
+                    if (output instanceof StreamingOutput) {
+                    //StreamingOutput类型直接返回
+                        Message message = ((StreamingOutput<?>) output).message();
+                        return message != null ? message.getText() : "";
+                    } else {
+                        String nodeId = output.node();
+                        Map<String, Object> state = output.state().data();
+                        return "节点 '" + nodeId + "' 执行完成\n";
+                    }
+                })
+                .filter(text -> !text.isEmpty());
+```
+
+```
+agent.stream(...)
+→ Graph Runtime 开始运行
+→ Model Node 开始流式输出思考/回答
+→ 如果模型决定调用工具
+→ Tool Node 执行工具
+→ 返回一个普通 NodeOutput
+→ 工具结果进入 state
+→ Model Node 继续生成内容
+→ 所有节点输出合并成 Flux<NodeOutput>
+→ Controller 转成 Flux<String> 返回前端
+```
+
+##### 接入McP
+
+创建一个**连接 MCP Server 的通信通道**
+
+```
+            HttpClientStreamableHttpTransport streamableTransport = HttpClientStreamableHttpTransport
+                    .builder("http://127.0.0.1:8004/stream/test/")
+                    .endpoint("api/mcp")
+                    .clientBuilder(HttpClient.newBuilder()
+                            .connectTimeout(Duration.ofSeconds(60))  // 连接超时60秒
+                            .version(HttpClient.Version.HTTP_1_1))   // 使用 HTTP/1.1 更稳定
+                    .build();
+```
+
+**同步McPClient**
+
+```
+  McpSyncClient streamableClient = McpClient.sync(streamableTransport)
+                    .clientInfo(new io.modelcontextprotocol.spec.McpSchema.Implementation("streamable-client", "1.0"))
+                    .requestTimeout(Duration.ofSeconds(60))  // 增加请求超时到60秒
+                    .build();
+```
+
+**暴露工具能力**
+
+```
+ McpSyncClient客户端
+			//把远程 MCP 服务暴露的工具转换成 Spring AI 能识别的 ToolCallback[]
+            List<McpSyncClient> clients = List.of(streamableClient)				
+            SyncMcpToolCallbackProvider provider = SyncMcpToolCallbackProvider.builder()
+                    .mcpClients(clients)
+                    .build();
+
+            ToolCallback[] callbacks = provider.getToolCallbacks();
+```
+
+##### 组件
+
+**Model仅需ChatModel**
+
+```
+DashScopeApi dashScopeApi = DashScopeApi.builder()
+        .apiKey("sk-XXXXXXXXXXXXXXXXXXXX")
+        .build();
+// 创建 ChatModel
+ChatModel chatModel = DashScopeChatModel.builder()
+        .dashScopeApi(dashScopeApi)
+        .defaultOptions(DashScopeChatOptions.builder()
+                .withModel("qwen-plus")
+                .withTemperature(0.7)    // 控制随机性
+                .withMaxToken(2000)      // 最大输出长度
+                .withTopP(0.9)           // 核采样参数
+                .build())
+        .build();
+```
+
+**Tools可以利用带多个@Tool的类.tools(ToolCallbacks.from(new StockTools()))**
+
+**ToolContext统一管理参数、状态、memory、config 并封装返回值**
+
+**System Prompt**
+
+- **systemPrompt("...")**：简单字符串提示词。
+- **instruction("...多行指令...")**：适合更复杂或结构化的提示
+
+```
+ReactAgent agent = ReactAgent.builder()
+    .name("architect_agent")
+    .model(chatModel)
+    // .systemPrompt("你是一个智能助手。")
+    .instruction(instruction)
+    .build();
+
+AssistantMessage resp = agent.call("我想搭一个微服务系统，用 Java + Spring，怎么设计？");
+System.out.println(resp.getText());
+```
+
+**结构化输出**
+
+- **.outputType(BookListResult.class)在类的返回值设置为record**
+- **SpringAI是entity(类名.class)**
+
+**Memory**
+
+```
+// 短期记忆
+ReactAgent agent = ReactAgent.builder()
+            .name("chat_agent")
+            .model(chatModel)
+            .saver(new MemorySaver())
+            .build();
+//对话id
+    RunnableConfig config = RunnableConfig.builder()
+            .threadId("user_123")
+            .build();
+
+    agent.call("你好！我叫 bigchui。", config);
+
+    AssistantMessage resp = agent.call("我叫什么名字？", config);
+    System.out.println(resp.getText());
+```
+
+**长期记忆**
+
+```
+@Autuwrid 
+private DataSource dataSource
+.saver(new MysqlSaver.Builder()
+       .dataSource(dataSource).build()).build();
+```
+
+**Hooks**
+
+**执行过程中的“生命周期钩子相当于advisor**
+
+- **BEFORE_AGENT` / `AFTER_AGENT：Agent 整体执行前后**
+- **BEFORE_MODEL / AFTER_MODEL：Agent Loop 循环过程中，每次模型调用前后**
+- **继承于AgentHook**
+
+```
+@Override
+    public CompletableFuture<Map<String, Object>> beforeAgent(OverAllState state, RunnableConfig config) {
+        System.out.println("Agent 开始执行");
+        return CompletableFuture.completedFuture(Map.of());
+    }
+
+    @Override
+    public CompletableFuture<Map<String, Object>> afterAgent(OverAllState state, RunnableConfig config) {
+        System.out.println("Agent 执行完成");
+        return CompletableFuture.completedFuture(Map.of());
+    }
+```
+
+**Interceptor拦截器**
+
+- **继承于ModelInterceptor**
+
+- **Hooks 控制 Agent 的执行节奏和流程，Interceptors 控制具体的调用行为；**
+- **Hooks 在生命周期节点插入，Interceptors 在调用边界拦截**
+
+##### 原理
+
+```mermaid
+flowchart TD
+    A["用户调用<br/>agent.call('查询南京天气')"] --> B["ReactAgent.call(...)"]
+    B --> C["buildMessageInput<br/>封装 messages / input"]
+    C --> D["doInvoke(...)"]
+    D --> E["getAndCompileGraph()"]
+    E --> F["ReactAgent.initGraph()<br/>构建 StateGraph"]
+
+    F --> F1["注册 model 节点<br/>node_async(llmNode)"]
+    F --> F2["注册 tool 节点<br/>node_async(toolNode)"]
+    F --> F3["注册 hooks / interceptors"]
+    F --> F4["setupToolRouting<br/>配置条件边"]
+
+    F4 --> G["CompiledGraph.invoke(...)"]
+    G --> H["GraphRunner.run(overAllState)"]
+    H --> I["MainGraphExecutor.execute(...)"]
+    I --> J["NodeExecutor.execute(...)"]
+    J --> K["action.apply(state, config)"]
+
+    K --> L["model 节点<br/>AgentLlmNode.apply(...)"]
+    L --> M["调用 ChatModel<br/>生成 AssistantMessage"]
+    M --> N{"AssistantMessage<br/>是否包含 tool_calls?"}
+
+    N -- "是" --> O["路由到 tool 节点"]
+    O --> P["AgentToolNode.apply(...)"]
+    P --> Q["解析 tool_calls"]
+    Q --> R["执行 ToolCallback<br/>weather FunctionToolCallback"]
+    R --> S["生成 ToolResponseMessage<br/>写回 messages"]
+    S --> T{"是否 return_direct<br/>或满足退出条件?"}
+    T -- "否，默认" --> L
+    T -- "是" --> X["END"]
+
+    N -- "否" --> X
+    X --> Y["extractAssistantMessage(...)"]
+    Y --> Z["返回最终文本<br/>getText()"]
+```
+
+**Alibaba 的 `ReactAgent` 把 ReAct 的“模型推理 -> 工具调用 -> 工具结果再推理”编译成了一张 Graph**
+
+**参数**
+
+- **overAllState 全局状态，存储运行的各个环节。**
+- **状态靠 OverAllState.messages持续累积。**
+
+**画图**
+
+- **调用 compiledGraph.invoke(...)** 
+- **最终会走 `GraphRunner.run(...)运行构建的流程图**
+
+**节点**
+
+**节点的运行逻辑**
+
+- **mainGraphExecutor.execute---->>nodeExecutor.execute，就是节点执行器。**
+- **从GraphRunnerContext 中取出当前要执行的节点和对应的 Action**
+- **如果是可中断节点则优先处理外部反馈并判断是否需要直接中断流程；**
+- **真正的执行逻辑就是 action.apply，执行完成后，会将结果统一转换成GraphResponse。**
+
+![image.webp](https://img.f3f3.top/picgo/1787980817236_image.webp)
+
+**不好debug因为这是函数式接口**
+
+- **只是把同步的 NodeActionWithConfig包装成返回CompletableFuture的异步节点**
+- **真正逻辑取决于建图时注册进去的是谁。源码里 node_async(syncAction) 内部实际调用的是 syncAction.apply(state, config)**
+
+**ReactAgent.initGraph() 里注册了两个主节点**：
+
+**model` 和 `tool 是两个核心节点，循环靠条件边完成**
+
+
+
+**执行节点**
+
+**node_async** 封装节点逻辑
+
+**llm节点**
+
+- **AgentLlmNode.apply(...) 负责组装 `ModelRequest`**
+- **读取当前 messages，挂载工具名、工具描述、systemPrompt，然后调用模型**
+
+**Tool节点**
+
+- **AgentToolNode.apply(...) 则读取最后一条 AssistantMessage，判断里面是否有 toolCalls。**
+- **如果有，就根据配置选择串行或并行执行工具；执行时会根据工具名解析出 ToolCallback`，`**
+- **调用 `FunctionToolCallback`、`MethodToolCallback`、`AsyncToolCallback` 等具体工具**
+- **执行完成后把工具结果封装成 ToolResponseMessage，继续写回 messages**
+
+
+
+**循环是怎么来的**
+
+- **循环不是 while 明写在 ReactAgent.call里，而是由 Graph 的条件边实现的。**
+- **在 setupToolRouting(...)里，ReactAgent`配置了两组条件边**
+
+```
+Model -> Tool / Loop / Exit
+Tool  -> Model / Exit
+```
+
+**makeModelToTools(...) 会看最后一条消息：**
+
+- **如果最后是 AssistantMessage且包含 toolCalls，跳到 tool 节点。**
+- **如果最后是普通回答，没有工具调用，跳到结束节点。**
+- **如果最后是 ToolResponseMessage，则判断工具是否都执行完；执行完就回到模型节点继续推理，否则继续执行工具节点**
+
+**makeToolsToModelEdge(...) 的设计意图是：工具执行完成后默认回到模型节点，让模型基于工具结果再思考一轮；如果所有工具都配置了 return_direct=true，则可以直接结束**
+
+### PlanAct
 
 #### 核心流程
 
@@ -5218,22 +6849,479 @@ Tool = API 的抽象,tool就是调用后端接口的能力：post，get
 
 - ❌ **灵活性差**：前期规划错了，后面容易一路错到底
 
-| 维度      | ReAct                    |   PlanAct（Plan-and-Execute）    |
-| --------- | ------------------------ | :------------------------------: |
-| 核心逻辑  | **边想边做，动态迭代**   |    **先全局规划，再顺序执行**    |
-| 时序      | 思考与行动**交替**       | 先**一次性规划**，后**批量执行** |
-| 灵活性    | 强（随时调整）           |        弱（计划定了难改）        |
-| 稳定性    | 易漂移、绕圈             |           高、不易跑题           |
-| 效率/成本 | 调用多、成本高           |          调用少、成本低          |
-| 最佳场景  | 实时信息、探索、环境多变 |   流程固定、长任务、结构化工作   |
-
-### 怎么选
+#### 区别
 
 - **不确定、要实时反馈、探索型 → ReAct**
 
 - **确定流程、长任务、要稳定高效 → PlanAct**
 
 - **工程常用混合：外层 Plan，内层 ReAct**（大任务拆解，子任务动态处理）
+
+### Reflection
+
+**让大语言模型（LLM）在完成任务后，对其自身的行为或输出进行批判性反思，并基于反思结果进行改进**。
+
+### 人工确认
+
+**在用户允许的边界内，让 Agent 自动运行；一旦即将执行高风险或高不确定性的动作，必须经过人工确认。**
+
+**Spring AI Alibaba对 Agent HITL 的支持，通过HumanInTheLoopHook实现，这是Hook机制**
+
+**配置中断**：
+
+- **在创建 Agent 时，利用approvalOn方法配置哪些工具需要人工审批；**
+- **并配置MemorySaver记忆中断**
+
+```
+// 配置检查点保存器（人工介入需要检查点来处理中断）
+MemorySaver memorySaver = new MemorySaver();
+
+// 创建人工介入Hook
+HumanInTheLoopHook humanInTheLoopHook = HumanInTheLoopHook.builder() 
+  .approvalOn("write_file", ToolConfig.builder() 
+      .description("文件写入操作需要审批") 
+      .build()) 
+  .approvalOn("execute_sql", ToolConfig.builder() 
+      .description("SQL执行操作需要审批") 
+      .build()) 
+  .build(); 
+
+// 创建Agent
+ReactAgent agent = ReactAgent.builder()
+  .name("approval_agent")
+  .model(chatModel)
+  .tools(writeFileTool, executeSqlTool, readDataTool)
+  .hooks(List.of(humanInTheLoopHook)) 
+  .saver(memorySaver) 
+  .build();
+```
+
+**响应中断**：
+
+**调用 Agent 运行逻辑，若触发人工中断，返回中断元数据；**
+
+**要执行工具时interrupt 在真正执行前拦住它，返回 InterruptionMetadata，把工具名、参数、说明都暴露出来。**
+
+**interrupt 的实际调用是在NodeExecutor类中执行的。**
+
+**有没有人工反馈**
+
+- **检查 RunnableConfig 中是否已携带人工反馈（HUMAN_FEEDBACK_METADATA_KEY），**
+- **如果存在，说明当前不是第一次执行，而是在“人工审批之后的恢复阶段”**
+
+**有反馈验收**
+
+- **校验反馈是否合法，若反馈不完整或不符合审批规则，则继续返回该 InterruptionMetadata，强制 Graph 再次中断；**
+- **若反馈合法，则返回 Optional.empty()，明确放行当前节点，允许执行继续向下推进**
+
+**没有反馈**
+
+- **若不存在人工反馈，则进入首次执行路径：从当前状态中取出最后一条消息，确认其为包含 Tool Call 的 AssistantMessage，并逐一检查这些 Tool Call 是否命中 `approvalOn` 中声明的受控工具。**
+- **一旦发现任意一个受控工具调用，就构造对应的 `InterruptionMetadata`，将工具名称、参数和用于人工审批的描述信息封装为 `ToolFeedback`，并返回该中断结果。**
+- **Graph 执行引擎在收到这个返回值后会立即暂停执行，将控制权交还给调用方，从而完成 HITL 中断。**
+
+**apply = 真正执行这个节点**
+
+**MemorySaver + RunnableConfig(threadId )负责“记住上一次跑到哪了**
+
+```
+/ 人工介入利用检查点机制。
+// 你必须提供线程ID以将执行与会话线程关联，
+// 以便可以暂停和恢复对话（人工审查所需）。
+String threadId = "user-session-123"; 
+RunnableConfig config = RunnableConfig.builder() 
+  .threadId(threadId) 
+  .build(); 
+
+// 运行图直到触发中断
+Optional<NodeOutput> result = agent.invokeAndGetOutput( 
+  "删除数据库中的旧记录",
+  config
+);
+
+// 检查是否返回了中断
+if (result.isPresent() && result.get() instanceof InterruptionMetadata) { 
+  InterruptionMetadata interruptionMetadata = (InterruptionMetadata) result.get(); 
+
+  // 中断包含需要审查的工具反馈
+  List<InterruptionMetadata.ToolFeedback> toolFeedbacks = 
+      interruptionMetadata.toolFeedbacks(); 
+
+  for (InterruptionMetadata.ToolFeedback feedback : toolFeedbacks) {
+      System.out.println("工具: " + feedback.getName());
+      System.out.println("参数: " + feedback.getArguments());
+      System.out.println("描述: " + feedback.getDescription());
+  }
+
+  // 示例输出:
+  // 工具: execute_sql
+  // 参数: {"query": "DELETE FROM records WHERE created_at < NOW() - INTERVAL '30 days';"}
+  // 描述: SQL执行操作需要审批
+}
+```
+
+**恢复执行**
+
+- 将人工决策反馈传回给 Agent，并继续执行 React 逻辑。
+- 人工反馈通过 RunnableConfig回传，Agent 读取后继续跑
+
+```
+List<InterruptionMetadata.ToolFeedback> toolFeedbacks =
+              interruptionMetadata.toolFeedbacks();
+
+
+InterruptionMetadata.Builder feedbackBuilder = InterruptionMetadata.builder()
+              .nodeId(interruptionMetadata.node())
+              .state(interruptionMetadata.state());
+
+toolFeedbacks.forEach(toolFeedback -> {
+              InterruptionMetadata.ToolFeedback approvedFeedback =
+                  InterruptionMetadata.ToolFeedback.builder(toolFeedback)
+                      .result(InterruptionMetadata.ToolFeedback.FeedbackResult.APPROVED)
+                      .build();
+              feedbackBuilder.addToolFeedback(approvedFeedback);
+          });
+
+InterruptionMetadata approvalMetadata = feedbackBuilder.build();
+
+
+RunnableConfig resumeConfig = RunnableConfig.builder()
+              .threadId(threadId)
+              .addMetadata(RunnableConfig.HUMAN_FEEDBACK_METADATA_KEY, approvalMetadata)
+              .build();
+
+Optional<NodeOutput> finalResult = agent.invokeAndGetOutput("", resumeConfig);
+
+if (finalResult.isPresent()) {
+              System.out.println("执行完成");
+              System.out.println("最终结果: " + finalResult.get());
+}
+```
+
+### Multi
+
+#### SubAgent 
+
+**单智能体能做很多事，但任务一复杂就容易遇到几个问题**
+
+- **上下文窗口不够，注意力发散**
+- **不同子任务需要不同模型或专长**
+- **任务太大，单体效率慢**
+- **任务不够聚焦，效果不稳定**
+- **工具太多，容易选错**
+
+**子智能体模式**
+**主 Agent 把别的 Agent 当成工具调用。**
+**适合：一个主控，多个专才。**
+
+- **主Agent负责决定调用哪个子Agent，提供什么输入，以及如何组合结果。**
+- **子Agent是无状态的——它们直接和用户交互，所有的对话和记忆都由主代理维护**
+- **提供了上下文隔离：每个子代理的调用都在一个干净的上下文窗口中工作，防止主对话中的上下文膨胀**
+
+```
+// 创建子Agent
+ReactAgent writerAgent = ReactAgent.builder()
+.name("writer_agent")
+.model(chatModel)
+.description("可以写文章")
+.tolls(...)
+.instruction("你是一个知名的作家，擅长写作和创作。请根据用户的提问进行回答。")
+.build();
+
+// 创建主Agent，将子Agent作为工具
+ReactAgent blogAgent = ReactAgent.builder()
+.name("blog_agent")
+.model(chatModel)
+.instruction("根据用户给定的主题写一篇文章。使用写作工具来完成任务。")
+//将子agent当作工具
+.tools(AgentTool.getFunctionToolCallback(writerAgent))
+.build();
+
+// 使用
+Optional<OverAllState> result = blogAgent.invoke("帮我写一个100字左右的散文");
+```
+
+- **MethodToolCallback构造一个ToolBack方法将agent的名字和描述作为工具的描述**
+- **将AgentToolExecutor这个内部类的executeAgent作为方法的工具的实际调用方法。直接调用Graph底层的invoke方法做执行**
+
+**Agent Tool 解决“怎么调用别的 Agent，Handoffs 解决“谁来继续对话”，Graph 解决“这些步骤怎么编排起来**
+
+#### Handoff 
+
+**接管交接模式**
+**当前 Agent 发现自己不适合继续，就把任务转交给更合适的 Agent。**
+**适合：按阶段接力完成任务。**
+
+**AutoGen**: 使用**事件驱动**和**发布-订阅**（Pub/Sub）模型。每个智能体订阅一个特定的“主题”（Topic）。当一个智能体调用“交接工具”时，它会向目标智能体的主题发布一个包含完整上下文的新消息（`UserTask`），从而激活目标智能体
+
+**LangChain/LangGraph**: 将交接视为**图**（Graph）。交接工具会返回一个 `Command` 对象，该对象可以：
+
+- **更新状态**（`update`）：改变 `current_step` 变量，让同一个智能体在下一轮使用不同的提示词和工具（单智能体动态配置）。
+
+- **跳转节点**（`goto`）：直接指定下一个要执行的智能体节点（多智能体子图）。
+
+**Spring AI Alibaba：**底层是参考了LangGraph的。
+
+SequentialAgent：按顺序执行，前一个输出喂给后一个
+
+```
+SequentialAgent blogAgent = SequentialAgent.builder() 
+  .name("blog_agent")
+  .description("根据用户给定的主题写一篇文章，然后将文章交给评论员进行评论")
+  .subAgents(List.of(writerAgent, reviewerAgent)) 
+  .build();
+```
+
+- ParallelAgent：多个 Agent 并行处理同一输入，最后合并结果。
+
+```
+ParallelAgent parallelAgent = ParallelAgent.builder() 
+  .mergeOutputKey("merged_results") 
+  .subAgents(List.of(proseWriterAgent, poemWriterAgent, summaryAgent)) 
+  .mergeStrategy(new ParallelAgent.DefaultMergeStrategy()) 
+  .build();
+```
+
+- LlmRoutingAgent：LLM 只路由一次，选一个最合适的子 Agent
+
+```
+LlmRoutingAgent routingAgent = LlmRoutingAgent.builder()
+  .subAgents(List.of(writerAgent, reviewerAgent, translatorAgent)) 
+  .build();
+```
+
+- `SupervisorAgent`：监督者多轮调度，子 Agent 做完还能回来继续决策，适合“写完再翻译
+
+```
+SupervisorAgent supervisorAgent = SupervisorAgent.builder()
+  .subAgents(List.of(writerAgent, translatorAgent)) 
+  .build();
+```
+
+```mermaid
+flowchart LR
+    A[ReactAgent / FlowAgent] --> B[构建 Graph]
+    B --> C[节点 nodes]
+    B --> D[边 edges]
+    C --> E[StateGraph compile]
+    D --> E
+    E --> F[invoke 执行]
+    F --> G[OverAllState / 输出结果]
+```
+
+**LlamaIndex：**LlamaIndex内置了一个AgentWorkflow，它本质上是一个预设了理解智能体、状态和工具调用的工作流。实现了自动化的智能体 Handoff。开发者只需定义多个专业化智能体并指定入口，框架即可在它们之间动态转移控制权，形成端到端的多智能体协作流水线。
+
+#### Chat Group 
+
+**群聊模式**
+多个 Agent 在同一个“群”里轮流发言，由管理器决定谁下一步发言。
+适合：需要动态讨论、逐步推进的复杂任务。
+
+### AutoGen
+
+**AutoGen 由微软开发的一个开源框架，用来简化构建多智能体（Multi-Agent）系统和复杂 LLM（大语言模型）工作流的过程**
+
+- **AssistantAgent**：扮演助手角色，通常基于大语言模型（如 GPT-4、Claude、Llama 等）生成内容。
+- **UserProxyAgent**：代表用户，可以自动执行代码、调用函数、请求人类输入等。
+- UserProxyAgent 支持自动执行由 LLM 生成的 Python 代码，并在隔离环境中运行（如docker）
+- **GroupChatManager**：协调多个智能体进行群聊（GroupChat），支持轮询、发言权控制等策略。
+- **Tool-using Agents**：可集成外部工具（如搜索引擎、数据库、API）
+
+#### GroupChat 
+
+一个用于管理多个智能体之间对话流程的类。它定义了一个“群聊”环境，其中包含一组参与对话的智能体（agents），并控制对话如何进行（例如轮次限制、发言顺序等
+
+- agents: 一个包含所有参与群聊的智能体的列表（如 UserProxyAgent、AssistantAgent 等）。
+- max_round: 最大对话轮数，防止无限循环。
+- speaker_selection_method: 决定下一位发言者的方式，可选：
+- `"auto"`（默认）：由 LLM 根据上下文自动选择下一个发言者。
+- `"round_robin"`：按固定顺序轮流发言。
+- `"random"`：随机选择。也可以传入自定义函数。
+- allow_repeat_speaker: 是否允许同一个智能体连续发言（默认为 True）。
+- send_introductions: 是否在开始时让每个智能体发送自我介绍。
+
+#### Manager
+
+**群聊管理器**
+
+- 监听消息：接收来自其他智能体的消息。
+- 决定下一个发言者：根据 GroupChat 中设定的 `speaker_selection_method` 选择下一个应该发言的智能体。
+- 转发消息：将当前消息传递给下一个发言者，并触发其响应。
+- 控制终止条件：当达到最大轮数或某个智能体返回终止信号（如 `TERMINATE`）时，结束对话。
+
+```
+import autogen
+
+OPENAI_API_KEY = "<你的 api key>"
+OPENAI_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# 配置 LLM（替换为你的 API 密钥）
+config_list = [
+    {
+        "model": "deepseek-v3",
+        "api_key": OPENAI_API_KEY,
+        "base_url": OPENAI_API_BASE,
+    }
+]
+llm_config = {"config_list": config_list}
+# 1. 定义三个智能体
+product_manager = autogen.AssistantAgent(
+    name="ProductManager",
+    system_message="你是一名产品经理。请清晰描述用户需求，并确保功能定义无歧义。",
+    llm_config=llm_config,
+)
+
+software_engineer = autogen.AssistantAgent(
+    name="SoftwareEngineer",
+    system_message="你是一名资深 Python 工程师。请根据产品需求编写简洁、正确的代码，并附带使用示例。",
+    llm_config=llm_config,
+)
+
+code_reviewer = autogen.AssistantAgent(
+    name="CodeReviewer",
+    system_message=(
+        "你是代码审查员。你的职责是：\n"
+        "1. 检查代码是否满足产品需求；\n"
+        "2. **但不要假设代码运行正确**；\n"
+        "3. **不要回复 TERMINATE**；\n"
+        "4. 如果代码逻辑有明显错误，请指出；\n"
+        "5. 如果代码看起来合理，请说：'代码逻辑无明显错误，请 UserProxy 执行验证。'\n"
+        "只有在 UserProxy 执行后，确认输出符合预期，才可回复 TERMINATE。"
+    ),
+    llm_config=llm_config,
+)
+
+# 2. 用户代理（启动任务 + 可选执行代码）
+user_proxy = autogen.UserProxyAgent(
+    name="User",
+    human_input_mode="NEVER",
+    max_consecutive_auto_reply=10,
+    
+  ///  UserProxyAgent 配置了 code_execution_config，允许它：
+//在本地目录（work_dir="coding"）中自动执行 Python 代码；
+    code_execution_config={
+        "work_dir": "coding",     
+        "use_docker": False,       
+    },
+    is_termination_msg=lambda x: any(
+        term in x.get("content", "") for term in ["TERMINATE", "批准通过", "任务完成"]
+    ),
+)
+
+# 3. 创建群聊
+groupchat = autogen.GroupChat(
+    agents=[user_proxy, product_manager, software_engineer, code_reviewer],
+    messages=[],
+    max_round=12,
+    speaker_selection_method="auto",  # 让 LLM 决定下一个发言者
+    //由 LLM 自主决定下一位发言者（基于上下文），这是 AutoGen 的高级调度策略
+)
+
+manager = autogen.GroupChatManager(
+    groupchat=groupchat,
+    llm_config=llm_config,
+)
+
+# 4. 启动群聊
+user_proxy.initiate_chat(
+    manager,
+     message=(
+            "我需要一个函数：输入一个字符串列表，返回其中最长的字符串。"
+            "如果有多个一样长的，返回第一个。"
+            "请实现该函数，并用以下测试用例验证："
+            "['apple', 'hi', 'banana', 'cat'] → 应返回 'banana'；"
+            "[] → 应抛出 ValueError。"
+            "请 SoftwareEngineer 用 ```python 代码块提供完整可执行代码，包括测试用例。"
+            "在代码审核通过后，UserProxy 执行后再结束。"
+        ),
+)
+```
+
+## A2A协议
+
+**开始**
+
+- 主 Agent 先发现对方能干什么，先读远程 Agent 的 Agent Card确认能力
+- 主 Agent 判断“这个活能不能外包，找专业的子agent
+- 主 Agent 发的是 Message，不是裸 `Task`。客户端通过 `SendMessage` 把消息发出去，服务端返回的是 `Task` 或直接返回 `Message`。
+- 服务端决定怎么处理。简单问题可以直接回 `Message`；复杂问题会创建 Task,Task就是“可跟踪的工作单元”。
+- `Task` 会有状态流转。官方状态包括：`SUBMITTED`、`WORKING`、`COMPLETED`、`FAILED`、`CANCELED`、`INPUT_REQUIRED`、`AUTH_REQUIRED`、`REJECTED`。
+- A2A 不是“发出去等一个答案”，而是“围绕任务生命周期协作”。
+- 结果和过程可以分开传。
+  结果可能是普通消息，也可能带 `Artifact`，比如报告、文件、图片、日志。
+  长任务还可以流式回传状态更新。
+
+`contextId` 是把一串互动串起来的“总上下文”。
+`taskId` 是某一次具体任务；`contextId` 是这段协作会话。
+任务终态后不能原地重启，要在同一个 `contextId` 下开新任务继续。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant C as 主 Agent / Client Agent
+    participant A as 远程 Agent / Server
+    participant M as MCP / 工具层
+
+    U->>C: 提出问题
+    C->>C: 读取 Agent Card\n确认能力 / 认证 / 输入输出
+    C->>A: SendMessage(Message)\n消息中携带 Task
+    A->>A: 校验任务并创建 Task
+
+    alt 短任务
+        A->>M: 调用内部工具 / API
+        M-->>A: 返回结果
+        A-->>C: Response Message\n可附带 Artifact
+    else 长任务
+        A-->>C: 状态更新\nworking / input_required / auth_required
+        A->>M: 持续执行
+        M-->>A: 中间结果
+        A-->>C: 完成消息\n+ Artifact
+    end
+
+    C-->>U: 汇总最终结果
+```
+
+## 上下文工程
+
+
+
+
+
+
+
+## 长期记忆
+
+
+
+
+
+
+
+
+
+
+
+## Harness
+
+**Agent = 模型 (Model) + Harness**
+
+- 模型：负责思考、推理、决策
+- Harness：负责**稳定、不崩、不跑偏、可持久、可恢复**
+
+
+
+## Skill
+
+
+
+## AgentScope
+
+
+
+
+
+
 
 ## 多agent
 

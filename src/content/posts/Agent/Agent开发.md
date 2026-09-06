@@ -6693,7 +6693,7 @@ private DataSource dataSource
        .dataSource(dataSource).build()).build();
 ```
 
-**Hooks**
+##### **Hooks**
 
 **执行过程中的“生命周期钩子相当于advisor**
 
@@ -6831,6 +6831,1245 @@ Tool  -> Model / Exit
 
 **makeToolsToModelEdge(...) 的设计意图是：工具执行完成后默认回到模型节点，让模型基于工具结果再思考一轮；如果所有工具都配置了 return_direct=true，则可以直接结束**
 
+### 手搓ReAct
+
+#### 非流式
+
+**基于Spring AI实现思考和行动**
+
+![image.webp](https://img.f3f3.top/picgo/1787965273931_image.webp)
+
+**SimpleReactAgent的核心组成**
+
+##### 系统提示词
+
+大模型在输出的时候，如果是需要调工具则需要输出 tool_call 字段，然后工具的执行结果，由我们程序自己会注入到上下文之中，当没有 tool_call 的时候说明不需要再调用工具了，输出即结论。
+
+##### 初始化
+
+```
+private void initChatClient() {
+    try {
+        ToolCallingChatOptions toolOptions = ToolCallingChatOptions.builder()
+                .toolCallbacks(tools)
+                .internalToolExecutionEnabled(false)
+                .build();
+
+        this.chatClient = ChatClient.builder(chatModel)
+                .defaultOptions(toolOptions)
+                .defaultToolCallbacks(tools)
+                .build();
+    } catch (Exception e) {
+        throw new RuntimeException("ChatClient 初始化失败：" + e.getMessage(), e);
+    }
+}
+```
+
+**internalToolExecutionEnabled(false)**
+
+  **ChatClient 内部是具备自动工具调用能力的：当模型输出 ToolCall 后，框架会自动完成工具匹配、执行以及结果注入**
+
+  - **默认 true（框架代执行）：模型输出 ToolCall → 框架自动匹配、执行、注入结果。适合单轮问答，**
+  - **false（Agent 代执行）：模型只表达“我想调什么”，何时调、调几次、结果如何处理全部由你的代码显式控制**
+
+**模型只负责表达“我想调用什么工具”，而不再负责调用工具本身**
+
+**把工具执行权从 ChatClient交给 SimpleReactAgent**
+
+##### **上下文**
+
+**第一次包含ToolCall执行第二次**
+
+```
+第二次
+SystemMessage
+    ↓
+UserMessage
+    ↓
+AssistantMessage1(ToolCall)
+    ↓
+ToolResponseMessage1
+    第三次
+AssistantMessage2(ToolCall)
+    ↓
+ToolResponseMessage2
+    ↓
+AssistantMessage3(最终文本)
+```
+
+```
+第三次调用开始
+    ↓
+当前 messages：
+    SystemMessage
+    UserMessage
+    AssistantMessage1(ToolCall)
+    ToolResponseMessage1
+    AssistantMessage2(ToolCall)
+    ToolResponseMessage2
+    ↓
+调用模型 callModel(messages)
+    ↓
+得到 AssistantMessage3
+    ↓
+messages.add(AssistantMessage3)
+```
+
+- **每次模型返回 AssistantMessage后，先添加到 messages；**
+- **如果其中有 ToolCall，执行工具并添加 ToolResponseMessage，才进入下一次模型调用**
+
+```mermaid
+flowchart TD
+    A[创建 messages] --> B[messages.add SystemMessage]
+    B --> C[messages.add UserMessage]
+
+    C --> D[调用 ChatClient]
+    D --> E[模型返回 AssistantMessage]
+
+    E --> F[messages.add AssistantMessage]
+    F --> G{AssistantMessage 是否包含 ToolCall}
+
+    G -- 否 --> H[读取 assistantMessage.getText]
+    H --> I[返回最终答案]
+
+    G -- 是 --> J[读取 ToolCall.name]
+    J --> K[读取 ToolCall.arguments]
+    K --> L[findTool 工具查找]
+
+    L --> M[tool.call arguments]
+    M --> N[工具返回 result]
+
+    N --> O[构造 ToolResponse]
+    O --> P[构造 ToolResponseMessage]
+    P --> Q[messages.add ToolResponseMessage]
+
+    Q --> D
+```
+
+- **messages不仅仅是聊天记录，也是 Agent 的状态容器。**
+- **保存历史会话记忆、React 模式提示词、系统提示词、用户问题、工具决策tool_calls、工具执行结果**
+- **messages会在整个 ReAct 循环中不断地被扩展**
+
+##### 进入循环
+
+- **AssistantMessage 是消息外壳**
+- **AssistantToolCall 是消息内部的工具调用内容**
+
+**AssistantMessage的由来**
+
+- **模型第一次返回的不是最终答案，而是一个 Assistant Tool Call工具的调用请求****
+- **并由SpringAi映射成AssistantMessage对象**
+
+```
+AssistantMessage
+    ├── text
+    └── toolCalls
+          └── ToolCall
+                ├── id
+                ├── name
+                └── arguments
+```
+
+```
+AssistantMessage assistantMessage =
+        chatResponse
+                .getResult()
+                .getOutput();
+
+String text = assistantMessage.getText();
+
+List<AssistantMessage.ToolCall> toolCalls =
+        assistantMessage.getToolCalls();
+```
+
+**模型返回决策**
+
+```
+无toolcall
+AssistantMessage 中没有 tool_call
+  ↓
+说明模型认为信息已经足够
+  ↓
+直接返回 AssistantMessage.content
+
+有toolcall
+AssistantMessage 中存在 AssistantToolCall
+  ↓
+检查是否达到最大轮次
+  ├── 已达到：停止循环，返回兜底结果
+  └── 未达到：执行工具
+                  ↓
+             得到工具结果
+                  ↓
+             封装为 ToolResponseMessage
+                  ↓
+             拼接回上下文
+                  ↓
+             再次调用模型
+```
+
+**进入循环根据maxRounds的判断**
+
+- **小于等于0的则表示无限制循环**
+- **每一轮开始，轮次是否已经超过`maxRounds`了，达到，强制输出答案**
+
+**ensureToolCallsClosed需要注意，必须带有tool_call的AssistantMessage后面要有ToolResponseMessage，否则就会报错400，给最后一个tool_call拼上一个空的结果**
+
+##### **调用工具**
+
+- **在模型返回 ToolCall 之后，Agent 并不会立刻执行工具，而是先将包含 ToolCall 的 AssistantMessage 追加到messages中**
+- **把模型本轮的“行动决策”补充为上下文的一部，完整感知自己已经做过哪些尝试。，**
+- **ToolCall 在这里并不代表执行结果而仅仅是模型表达出来的行动意图，整个 ReAct 的状态才是连续且可回溯的**
+- **Agent 遍历所有 ToolCall，显式查找并调用对应的工具实现，工具执行过程中出现的异常也由 Agent 统一兜底处理。**
+- **每一次工具调用的真实结果，都会被封装为 ToolResponseMessage并再次写入 messages，作为下一轮推理的 Observation 输入给模型。**
+
+```mermaid
+flowchart TD
+    A[用户发送问题] --> B[Agent 组装消息]
+    B --> C[调用大模型]
+
+    C --> D{AssistantMessage 中是否有 ToolCall}
+
+    D -- 否 --> E[直接读取普通文本]
+    E --> F[返回最终答案]
+
+    D -- 是 --> G[得到 AssistantToolCall]
+    G --> H[读取工具名称、参数和调用 ID]
+
+    H --> I[根据工具名称查找 ToolCallback]
+    I --> J[Java 程序执行真实工具]
+
+    J --> K[生成 ToolResponseMessage]
+    K --> L[保存 ToolCall 和 ToolResponse]
+
+    L --> M[再次调用大模型]
+    M --> D
+```
+
+#### 流式
+
+##### 状态管理
+
+- **非流式模式中，模型一次性返回完整结果：要么是最终答案，要么是完整的 ToolCall；**
+- **流式模式下，模型的输出被拆成了多个 chunk，文本和 ToolCall 都是分段到达的，如果没有额外的状态管理能力，Agent无法判断当前轮次的模式的**
+
+**每一轮都有一个独立的执行状态**
+
+**RoundState state = new RoundState();**
+
+```
+//当前一轮模型流式输出的处理状态。
+private static class RoundState {
+    private RoundMode mode = RoundMode.UNKNOWN;
+
+    /**
+     * 缓存当前轮已经接收到的文本。
+     *
+     * 作用：
+     * 1. 最终答案模式下保存完整答案
+     * 2. 最后写入 ChatMemory
+     * 3. 如果不采用实时输出，可以在本轮结束后统一发送
+     */
+    private final StringBuilder textBuffer =
+            new StringBuilder();
+
+    //当前轮接收到的所有 ToolCall。   
+     * 一个模型响应中可能包含多个工具调用，
+     * 例如同时调用 weather 和 search。
+     */
+    private final List<AssistantMessage.ToolCall> toolCalls =
+            new ArrayList<>();
+}
+
+ //当前轮的运行模式
+private enum RoundMode {
+
+    //尚未判断当前轮的模式   
+    UNKNOWN,
+     //当前轮暂时按照最终答案处理。
+    FINAL_ANSWER,
+//当前轮已经发现工具调用。
+    TOOL_CALL
+}
+```
+
+```
+public Flux<String> stream(String question) {
+    return streamInternal(null, question);
+}
+
+// 带会话记忆
+public Flux<String> stream(String conversationId, String question) {
+    return streamInternal(conversationId, question);
+}
+
+
+public Flux<String> streamInternal(String conversationId, String question) {
+    List<Message> messages = Collections.synchronizedList(new ArrayList<>());
+    boolean useMemory = conversationId != null && chatMemory != null;
+
+    // ===== 加载历史记忆 =====
+    if (useMemory) {
+        List<Message> history = chatMemory.get(conversationId);
+        if (history != null && !history.isEmpty()) {
+            messages.addAll(history);
+        }
+    }
+
+    // ===== 加载 System Prompt（仅新会话，防止重复）=====
+    if (messages.isEmpty()) {
+        messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
+        messages.add(new SystemMessage(systemPrompt));
+    }
+
+    messages.add(new UserMessage("<question>" + question + "</question>"));
+
+    // 添加记忆
+    if (useMemory) {
+        chatMemory.add(conversationId, new UserMessage(question));
+    }
+```
+
+##### Sink
+
+**第一次流式调用**
+
+```
+Sinks.Many<String> sink =
+        Sinks.many()
+                .unicast()
+                .onBackpressureBuffer();
+                
+```
+
+`Sink` 用来把 Agent 处理好的文本推给外部订阅者
+
+##### ScheduleRound
+
+```
+private void scheduleRound(List<Message> messages, Sinks.Many<String> sink, AtomicLong roundCounter, AtomicBoolean hasSentFinalResult,
+                           StringBuilder finalAnswerBuffer, boolean useMemory, String conversationId) {
+    // 轮次+1
+    roundCounter.incrementAndGet();
+    //设置每轮对话的状态
+    RoundState state = new RoundState();
+    //依据chatClient进行流式输出并
+    chatClient.prompt()
+            .messages(messages)
+            .stream()
+            .chatResponse()
+            //设置缓冲区,开其他线程处理状态判断如processChunk
+            //将后续的 processChunk、finishRound 等处理逻辑切换到 boundedElastic 调度器执行
+            .publishOn(Schedulers.boundedElastic())
+            
+            //决定执行什么模式根据每个chunk
+            .doOnNext(chunk -> processChunk(chunk, sink, state))
+            
+            //结束状态，有工具进入第二轮，没有直接输出结果
+            .doOnComplete(() -> finishRound(messages, sink, state, roundCounter, hasSentFinalResult, finalAnswerBuffer, useMemory, conversationId))
+            
+            
+            .doOnError(err -> {
+                if (!hasSentFinalResult.get()) {
+                    hasSentFinalResult.set(true);
+                    sink.tryEmitError(err);
+                }
+            })
+            .subscribe();
+```
+
+**publishOn(Schedulers.boundedElastic())**
+
+- **在模型流式输出和 Agent 处理逻辑之间加了一层缓冲区：模型可以持续、快速地把流式结果推送出来，**
+- **状态判断、参数拼接、工具调度等处理逻辑交由一个专门用于执行可能较慢任务的线程池来消费，避免阻塞输出**
+
+**流程**
+
+- **轮次加一，每一轮都会创建一个新的 RoundState，并通过chatClient.stream()订阅模型的流式输出。**
+- **每当新的 chunk 到来时，统一交由 processChunk处理，而当这一轮流式输出结束时，再由 `finishRound` 决定是否进入下一轮。**
+
+```mermaid
+flowchart TD
+    A[scheduleRound] --> B[roundCounter 加一]
+    B --> C[创建新的 RoundState]
+    C --> D[chatClient.prompt.messages]
+    D --> E[chatClient.stream.chatResponse]
+    E --> F[publishOn boundedElastic]
+    F --> G[接收一个流式 chunk]
+
+    G --> H{chunk 是否有效}
+    H -- 否 --> G
+    H -- 是 --> I[processChunk]
+
+    I --> J{是否第一个 chunk}
+    J -- 是 --> K{是否包含 ToolCall}
+
+    K -- 是 --> L[RoundState.mode = TOOL_CALL]
+    L --> M[累积 ToolCall]
+    M --> N[不向用户输出]
+
+    K -- 否 --> O[RoundState.mode = FINAL_ANSWER]
+    O --> P[提取文本]
+    P --> Q[sink.tryEmitNext 文本]
+    Q --> R[继续接收后续 chunk]
+
+    J -- 否 --> S{当前 RoundMode}
+
+    S -- FINAL_ANSWER --> T[提取文本]
+    T --> U[sink.tryEmitNext 文本]
+    U --> R
+
+    S -- TOOL_CALL --> V[累积文本片段]
+    V --> W[累积 ToolCall 片段]
+    W --> R
+
+    R --> X{本轮流是否结束}
+    X -- 否 --> G
+    X -- 是 --> Y[finishRound]
+```
+
+##### processChunk
+
+**在流式输出尚未完整到达时，判断模型这一轮到底想干什么**
+
+- **第一块chunk 检查是否已经出现 ToolCall，立即判定当前轮次进入工具模式，后续所有数据只需要围绕工具参数的补全与收集即可；**
+- **如果首块 chunk 中没有 ToolCall，则认为模型正在直接生成最终答案**
+- **ToolCall 不一定在第一个 chunk 出现**
+- **ToolCall 的参数必须累积完成,不一定一次性返回**
+
+```
+收到 chunk
+    ↓
+chunk 是否包含 ToolCall？
+    ├── 是
+    │   ↓
+    │   切换 TOOL_CALL 模式
+    │   合并 ToolCall
+    │   不向用户输出
+    │
+    └── 否
+        ↓
+        之前是否已经进入 TOOL_CALL 模式？
+        ├── 是
+        │   ↓
+        │   继续等待工具参数
+        │   不输出
+        │
+        └── 否
+            ↓
+            按普通文本处理
+            缓存文本
+            实时输出文本
+```
+
+- **某些模型会先输出思考文本，后输出 ToolCall，不能只以第一个chunk作为评判标准，应遍历每一个chunk**
+- **只要当前轮的任意一个 chunk 出现 ToolCall，就必须把整轮认定为工具调用模式**
+
+```
+
+private void processChunk(
+        ChatResponse chunk,
+        Sinks.Many<String> sink,
+        RoundState state
+) {
+    //第一步：校验 chunk 是否有效某些模型在流式结束时可能返回空 chunk，    
+    if (chunk == null
+            || chunk.getResult() == null
+            || chunk.getResult().getOutput() == null) {
+        return;
+    }
+
+    // 第二步：读取当前 chunk 中的 AssistantMessag
+     这里拿到的 AssistantMessage 只是当前 chunk 的增量内容，
+     并不一定是完整的 AssistantMessage。
+    AssistantMessage output =
+            chunk.getResult().getOutput();
+
+    //读取chunk中的普通文字
+    String text = output.getText();
+
+   //chunk参数积累
+    List<AssistantMessage.ToolCall> incomingToolCalls =
+            output.getToolCalls();
+
+   //遍历每一个chunk
+    if (incomingToolCalls != null
+            && !incomingToolCalls.isEmpty()) {
+
+        //工具调用模式
+        state.mode = RoundMode.TOOL_CALL;
+
+       
+         //需要根据 ToolCall ID 找到已有调用然后拼接 arguments
+        for (AssistantMessage.ToolCall incoming
+                : incomingToolCalls) {
+            mergeToolCall(state, incoming);
+        }
+        return;
+    }
+//一旦当前轮已经发现过 ToolCall，这一轮就已经确定是“工具调用轮”，后续 chunk 不能再被当成最终答案文本处理。
+    if (state.mode == RoundMode.TOOL_CALL) {
+        return;
+    }
+
+    //乐观输出在这里直接发送文字
+    if (text != null && !text.isEmpty()) {
+		这个模式不是绝对确定的
+        state.mode = RoundMode.FINAL_ANSWER;
+         //缓存文本   
+        state.textBuffer.append(text);
+
+        //将当前文本片段实时发送给外部订
+        sink.tryEmitNext(text);
+    }
+}
+```
+
+**此方案会立即输出文字**
+
+- **chunk 1：我先分析一下……代码已经把这段文字发给用户**
+- **chunk 2：ToolCall(getWeather)发现这是工具调用模式，但前面的内容已经无法撤回**
+
+**先缓存文本，只有整轮结束且没有 ToolCall，才输出给用户**
+
+```
+if (text != null && !text.isEmpty()) {
+    state.mode = RoundMode.FINAL_ANSWER;
+    state.textBuffer.append(text);
+    // 不在这里 sink.tryEmitNext(text)
+}
+```
+
+**在 `finishRound` 中确认整轮没有出现 ToolCall 后，再发送**
+
+```
+if (state.mode != RoundMode.TOOL_CALL) {
+    sink.tryEmitNext(state.textBuffer.toString());
+    sink.tryEmitComplete();
+}
+```
+
+**ToolCall 为什么需要合并**
+
+- **每个chunk都去调用工具，参数都是不完整的 JSON**
+
+- **mergeToolCall 也要在每个 chunk 调用**
+
+```
+private void mergeToolCall(
+        RoundState state,
+        AssistantMessage.ToolCall incoming
+) {
+    if (incoming == null) {
+        return;
+    }
+
+    String incomingId = incoming.id();
+
+    for (int i = 0; i < state.toolCalls.size(); i++) {
+        AssistantMessage.ToolCall existing =
+                state.toolCalls.get(i);
+
+        boolean sameCall =
+                incomingId != null
+                        && incomingId.equals(existing.id());
+
+        if (sameCall) {
+            String oldArguments =
+                    Objects.toString(
+                            existing.arguments(),
+                            ""
+                    );
+
+            String newArguments =
+                    Objects.toString(
+                            incoming.arguments(),
+                            ""
+                    );
+
+            String mergedArguments =
+                    oldArguments + newArguments;
+
+            String toolName =
+                    incoming.name() == null
+                            || incoming.name().isBlank()
+                            ? existing.name()
+                            : incoming.name();
+
+            state.toolCalls.set(
+                    i,
+                    new AssistantMessage.ToolCall(
+                            existing.id(),
+                            "function",
+                            toolName,
+                            mergedArguments
+                    )
+            );
+
+            return;
+        }
+    }
+
+    // 没有找到相同 ID，说明是一个新的 ToolCall
+    state.toolCalls.add(incoming);
+}
+```
+
+- **如果是最终答案模式，就持续将文本向外流式输出**
+- **如果是工具模式，则不对外输出内容，而是不断累积文本和 ToolCall 片段，直到本轮结束再统一处理**
+
+##### finishRound
+
+**每个chunk结束执行时**
+
+**doOnComplete(() -> finishRound(...))**
+
+- **FINAL_ANSWER：整轮没有出现 ToolCall，说明当前文本就是最终答案。**
+- **TOOL_CALL：当前轮出现过 ToolCall，需要先保存 AssistantMessage，再执行工具，最后进入下一轮模型调用。**
+
+- **工具模式Agent 则会把本轮流式过程中收集到的 ToolCall 和文本内容封装成一个完整的 AssistantMessag**
+- **写回到上下文中，补充模型的行动决策信息。执行这些工具调用，并在工具全部完成后**
+- **基于最新的上下文递归调度下一轮推理，也就是递归调用scheduleRound，就是相当于 call 非流式中的* while(true)**`
+
+```
+private void finishRound(
+        List<Message> messages,
+        Sinks.Many<String> sink,
+        RoundState state,
+        AtomicLong roundCounter,
+        AtomicBoolean hasSentFinalResult,
+        StringBuilder finalAnswerBuffer,
+        boolean useMemory,
+        String conversationId
+) {
+     情况一：整轮没有出现 ToolCall
+    当前 processChunk 使用的是“乐观流式输出”策略，
+ 普通文本已经在 processChunk 中通过：sink.tryEmitNext(text)发送给用户，因此这里不能再次发送 finalText，否则会导致最终答案重复。
+    
+    if (state.mode != RoundMode.TOOL_CALL) {
+        String finalText =
+                state.textBuffer.toString();
+// 先设置结束标记，避免异步回调重复结束。
+        if (!hasSentFinalResult.compareAndSet(false, true)) {
+            return;
+        }
+//保存最终答案。  
+        if (useMemory) {
+            chatMemory.add(
+                    conversationId,
+                    new AssistantMessage(finalText)
+            );
+        }
+//当前轮是最终答案，不再执行工具 也不再进入下一轮。
+        sink.tryEmitComplete();
+        return;
+    }
+
+  //情况二：当前轮出现过 ToolCall
+    AssistantMessage assistantMessage =
+            AssistantMessage.builder()
+                    /*
+                     * 如果工具调用前产生了文本，
+                     * 这里可以选择不放入 content，
+                     * 避免把 think 内容作为助手正式回复保存。
+                     */
+                    .toolCalls(state.toolCalls)
+                    .build();
+
+    //将模型的工具调用消息加入上下文。
+    messages.add(assistantMessage);
+
+    
+     //1. 先执行当前轮工具 2. 添加 ToolResponseMessage 3. 如果达到最大轮次，再强制生成最终答案
+     
+    boolean lastRound =
+            maxRounds > 0
+                    && roundCounter.get() >= maxRounds;
+// 执行当前轮的全部工具调用。只有全部工具执行完成后，才能进入 onComplete
+    executeToolCalls(
+            state.toolCalls,
+            messages,
+            hasSentFinalResult,
+            () -> {
+                if (hasSentFinalResult.get()) {
+                    return;
+                }        
+                if (lastRound) {
+                   // 现在基于工具结果强制生成最终答案。           
+                    forceFinalStream(
+                            messages,
+                            sink,
+                            hasSentFinalResult
+                    );
+                } else {
+                    // 工具结果已经准备好，进入下一轮流式模型调用
+                    scheduleRound(
+                            messages,
+                            sink,
+                            roundCounter,
+                            hasSentFinalResult,
+                            finalAnswerBuffer,
+                            useMemory,
+                            conversationId
+                    );
+                }
+            }
+    );
+}
+```
+
+```
+SimpleReactAgent 创建 RoundState
+    ↓
+processChunk 不断修改 RoundState
+    ↓
+finishRound 读取 RoundState
+    ↓
+构造 AssistantMessage(ToolCall)
+    ↓
+加入 messages
+    ↓
+执行 ToolCallback
+    ↓
+加入 ToolResponseMessage
+    ↓
+SimpleReactAgent 创建下一轮 RoundState
+```
+
+
+
+```mermaid
+flowchart TD
+    A[finishRound] --> B{RoundState.mode}
+
+    B -- FINAL_ANSWER --> C[所有答案 chunk 已经发送]
+    C --> D{是否使用记忆}
+    D -- 是 --> E[chatMemory.add AssistantMessage 最终答案]
+    D -- 否 --> F[跳过记忆]
+    E --> G[sink.tryEmitComplete]
+    F --> G
+    G --> H[ReAct 流程结束]
+
+    B -- TOOL_CALL --> I[组装完整 AssistantMessage]
+    I --> J[messages.add AssistantMessage]
+    J --> K{是否达到 maxRounds}
+
+    K -- 是 --> L[ensureToolCallsClosed]
+    L --> M[messages.add ToolResponseMessage 占位结果]
+    M --> N[messages.add UserMessage 强制最终答案指令]
+    N --> O[forceFinalStream]
+    O --> P[流式输出强制最终答案]
+    P --> Q[sink.tryEmitComplete]
+    Q --> H
+
+    K -- 否 --> R[executeToolCalls]
+```
+
+##### executeToolCalls
+
+- **将当前轮次中给出的所有 ToolCall 落地执行**
+- **没有按顺序串行调用工具，每个工具调用都会被提交到`boundedElastic` 线程池中并发执行**
+- **每一次工具执行的结果都会被统一封装为 `ToolResponseMessage` 并写回 `messages`，**
+- **作为下一轮推理所需的 Observation 输入。**
+- **为了在并发执行的情况下仍然保持 ReAct 轮次边界的清晰性，这里通过一个计数器来判断本轮工具是否已经全部执行完成。**
+- **只有当所有 ToolCall 都结束后，才会触发 `onComplete` 回调，进而调度下一轮推理。这样一来，模型始终是基于完整的工具执行结果进入下一轮决策。**
+
+```
+private void executeToolCalls(List<AssistantMessage.ToolCall> toolCalls, List<Message> messages, AtomicBoolean hasSentFinalResult, Runnable onComplete) {
+    AtomicInteger completedCount = new AtomicInteger(0);
+    int totalToolCalls = toolCalls.size();
+		//toolcall交给线程
+    for (AssistantMessage.ToolCall tc : toolCalls) {
+        Schedulers.boundedElastic().schedule(() -> {
+            if (hasSentFinalResult.get()) {
+                completeToolCall(completedCount, totalToolCalls, onComplete);
+                return;
+            }
+
+            String toolName = tc.name();
+            String argsJson = tc.arguments();
+
+            ToolCallback callback = findTool(toolName);
+            if (callback == null) {
+                addErrorToolResponse(messages, tc, "工具未找到：" + toolName);
+                completeToolCall(completedCount, totalToolCalls, onComplete);
+                return;
+            }
+			//将工具调用结果转成ToolResponseMessage并封装到messages
+            try {
+                Object result = callback.call(argsJson);
+                String resultStr = Objects.toString(result, "");
+                ToolResponseMessage.ToolResponse tr = new ToolResponseMessage.ToolResponse(
+                        tc.id(), toolName, resultStr);
+                messages.add(ToolResponseMessage.builder()
+                        .responses(List.of(tr))
+                        .build());
+            } catch (Exception ex) {
+                addErrorToolResponse(messages, tc, "工具执行失败：" + ex.getMessage());
+            } finally {
+                completeToolCall(completedCount, totalToolCalls, onComplete);
+            }
+        });
+    }
+}
+//判断本轮工具是否全部执行完
+private void completeToolCall(AtomicInteger completedCount, int total, Runnable onComplete) {
+    int current = completedCount.incrementAndGet();
+    if (current >= total) {
+        onComplete.run();
+    }
+}
+
+private ToolCallback findTool(String name) {
+    return tools.stream()
+            .filter(t -> t.getToolDefinition().name().equals(name))
+            .findFirst()
+            .orElse(null);
+}
+
+```
+
+```mermaid
+flowchart TD
+    A[executeToolCalls] --> B[读取本轮所有 ToolCall]
+    B --> C[创建 completedCount]
+    C --> D[遍历每一个 ToolCall]
+
+    D --> E[提交到 boundedElastic 线程池]
+    E --> F{hasSentFinalResult 是否为 true}
+
+    F -- 是 --> G[跳过工具执行]
+    G --> H[completedCount 加一]
+
+    F -- 否 --> I[读取工具名称]
+    I --> J[读取 JSON 参数]
+    J --> K[findTool]
+
+    K --> L{工具是否存在}
+    L -- 否 --> M[生成工具不存在的 ToolResponse]
+    L -- 是 --> N[callback.call 执行工具]
+
+    N --> O{工具执行是否成功}
+    O -- 是 --> P[获取工具执行结果]
+    P --> Q[构造 ToolResponse]
+    Q --> R[messages.add ToolResponseMessage]
+
+    O -- 否 --> S[生成工具执行失败的 ToolResponse]
+    S --> R
+
+    M --> T[completedCount 加一]
+    R --> T
+    H --> U{是否所有工具都完成}
+    T --> U
+
+    U -- 否 --> V[继续等待其他工具]
+    V --> U
+
+    U -- 是 --> W[scheduleRound 下一轮]
+    W --> X[重新调用 chatClient.stream]
+```
+
+##### messages
+
+**AssistantMessage 不再一次性得到，先由多个 chunk 暂存到 RoundState，等本轮结束后再组装并添加到 messages。**
+
+```
+chunk 1
+chunk 2
+chunk 3
+chunk 4
+    ↓
+都暂存在 RoundState
+RoundState.textBuffer
+RoundState.toolCalls
+```
+
+```
+RoundState
+├── mode: TOOL_CALL
+└── toolCalls
+    ├── weather(...)
+    └── search(...)
+```
+
+**最终答案模式**
+
+```
+sink.tryEmitComplete();
+```
+
+**把文本推给用户,结束 Flux保存,最终答案到 Memory**
+
+**工具调用模式**
+
+- **本轮结束时才构造完整的 `AssistantMessage`**
+- **流式 chunk 中的多个 ToolCall 片段，最终会被合并成一个完整的 AssistantMessage**
+
+```
+AssistantMessage assistantMsg =
+        AssistantMessage.builder()
+                .content(state.textBuffer.toString())
+                .toolCalls(state.toolCalls)
+                .build();
+
+messages.add(assistantMsg);
+```
+
+```
+stream(question)
+    ↓
+加载历史消息
+    ↓
+messages.add(SystemMessage)
+    ↓
+messages.add(UserMessage)
+    ↓
+scheduleRound
+    ↓
+创建 RoundState
+    ↓
+chatClient.stream()
+    ↓
+接收多个 chunk
+    ↓
+processChunk 判断本轮模式
+    ├── FINAL_ANSWER
+    │     ↓
+    │   文本实时发送给 Sink
+    │     ↓
+    │   流结束
+    │     ↓
+    │   保存最终答案
+    │     ↓
+    │   完成
+    │
+    └── TOOL_CALL
+          ↓
+        累积 ToolCall
+          ↓
+        本轮流结束
+          ↓
+        messages.add(AssistantMessage)
+          ↓
+        执行所有工具
+          ↓
+        messages.add(ToolResponseMessage)
+          ↓
+        所有工具完成
+          ↓
+        scheduleRound 下一轮
+          ↓
+        再次调用模型
+```
+
+### Reflection
+
+**让大语言模型（LLM）在完成任务后，对其自身的行为或输出进行批判性反思，并基于反思结果进行改进**。
+
+**ReflectionAgent 本质上是对 SimpleReactAgent 的封装**
+
+
+
+![image.webp](https://img.f3f3.top/picgo/1788674365869_image.webp)
+
+#### 封装属性
+
+```
+public class ReflectionAgent {
+		//这叫委托或组合模式
+    private final SimpleReactAgent delegate;
+    private ReflectionAgent(SimpleReactAgent delegate) {
+        this.delegate = delegate;
+    }
+
+    public String call(String question) {
+        return delegate.call(question);
+    }
+
+    public String call(String conversationId, String question) {
+        return delegate.call(conversationId, question);
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+
+        private String name = "reflection-react-agent";
+        private ChatModel chatModel;
+        private List<ToolCallback> tools = new ArrayList<>();
+        private int maxRounds;
+        private String systemPrompt = "";
+        private List<Advisor> advisors = new ArrayList<>();
+        private int maxReflectionRounds = 1;
+
+        public Builder name(String name) {
+            this.name = name;
+            return this;
+        }
+
+        public Builder chatModel(ChatModel chatModel) {
+            this.chatModel = chatModel;
+            return this;
+        }
+
+        public Builder tools(ToolCallback... tools) {
+            this.tools = Arrays.asList(tools);
+            return this;
+        }
+
+        public Builder tools(List<ToolCallback> tools) {
+            this.tools = tools;
+            return this;
+        }
+
+        public Builder advisors(Advisor... advisors) {
+            this.advisors.addAll(Arrays.asList(advisors));
+            return this;
+        }
+
+        public Builder systemPrompt(String systemPrompt) {
+            this.systemPrompt = systemPrompt;
+            return this;
+        }
+
+        public Builder maxReflectionRounds(int maxReflectionRounds) {
+            this.maxReflectionRounds = maxReflectionRounds;
+            return this;
+        }
+
+        public Builder maxRounds(int maxRounds) {
+            this.maxRounds = maxRounds;
+            return this;
+        }
+```
+
+#### 封装Advisor
+
+```
+public ReflectionAgent build() {
+
+            if (chatModel == null) {
+                throw new IllegalArgumentException("chatModel 不能为空");
+            }
+			
+			//引入advisors
+ReflectionAdvisor reflectionAdvisor = new ReflectionAdvisor(chatModel);
+			//合并用户传入的advisors
+            List<Advisor> finalAdvisors = new ArrayList<>(advisors);
+            
+  finalAdvisors.add(reflectionAdvisor);
+
+            ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(20).build();
+
+      //创建带反思能力的 SimpleReactAgent
+            SimpleReactAgent reactAgent = SimpleReactAgent.builder()
+                    .name(name)
+                    .chatModel(chatModel)
+                    .tools(tools)
+                    .maxRounds(maxRounds)
+                    .systemPrompt(systemPrompt)
+                    .chatMemory(chatMemory)
+                    .maxReflectionRounds(maxReflectionRounds)
+                    .advisors(finalAdvisors)
+                    .build();
+			//外层被封装成ReflectionAgent
+            return new ReflectionAgent(reactAgent);
+        }
+    }
+```
+
+#### 返回Agent
+
+```
+//ReflctionAgent封装上方的带有advisor的SimpleAgent
+public static void main(String[] args) {
+        ChatModel chatModel = ChatModelConfig.getChatModel();
+
+//封装两个工具
+        ToolCallback[] toolCallbacks = ToolCallbacks.from(new WeatherService(), new SearchService());
+
+        ReflectionAgent agent = ReflectionAgent.builder()
+                .name("ReflectionAgent")
+                .chatModel(chatModel)
+                .maxReflectionRounds(2)
+                .maxRounds(-1)
+                .tools(toolCallbacks)
+                .systemPrompt("你是专业的研究分析助手！")
+                .build();
+
+        String question = """
+                请你根据北京今天的天气、未来七天的天气趋势、以及上海今天的天气，并搜索北京天气的预警情况，生成一份不少于 200 字的综合分析报告。
+                """;
+
+        System.out.println(agent.call(question));
+    }
+}
+
+```
+
+- **SimpleReactAgent负责工具调用、ReAct 循环、记忆和轮次**
+- **ReflectionAgent：负责组装一个带 ReflectionAdvisor 的 SimpleReactAgent**
+
+#### Advisor
+
+```
+//callController非流式调用
+public class ReflectionAdvisor implements CallAdvisor {
+		//定义反思模型
+    private final ChatModel reflectionModel;
+		//进行结构化输出
+    private final BeanOutputConverter<ReflectionJudgement>
+            outputConverter =
+            new BeanOutputConverter<>(
+                    ReflectionJudgement.class
+            );
+
+    @Override
+    public ChatClientResponse adviseCall(
+            ChatClientRequest request,CallAdvisorChain chain) {
+
+//第一步：先让后续责任链执行，最终调用主模型。
+        ChatClientResponse response =
+                chain.nextCall(request);
+
+//第二步：如果模型返回的是 ToolCall，不进行最终答案反思。
+    因为此时模型还没有给出最终答案，当前只是请求程序执行工
+模型返回 ToolCall
+    ↓
+Agent 执行工具
+    ↓
+生成 ToolResponseMessage
+    ↓
+再次调用主模型
+    ↓
+模型生成最终文本
+    ↓
+ReflectionAdvisor 评估最终文本
+
+
+        if (response.chatResponse() != null
+                && response.chatResponse().hasToolCalls()) {
+            return response;
+        }
+
+
+//第三步：检查响应是否有效。
+        if (response.chatResponse() == null
+                || response.chatResponse().getResult() == null
+                || response.chatResponse()
+                        .getResult()
+                        .getOutput() == null) {
+            return response;
+        }
+
+
+ //第四步：提取模型当前回答。
+        String answer = response
+                .chatResponse()
+                .getResult()
+                .getOutput()
+                .getText();
+
+
+//第五步：从原始请求中提取用户问题。
+        String question =extractQuestion(request.prompt());
+
+//第六步：调用反思模型评估回答。
+        ReflectionJudgement judgement =
+                reflect(question, answer);
+
+
+ //第七步：反思通过，直接返回原响应。
+        if (judgement.passed()) {
+            return response;
+        }
+
+ 第八步：反思不通过，将状态和反馈写入响应上下文,这里不会马上再次调用主模型。只是给 SimpleReactAgent 标记：下一轮规划
+       
+       return response.mutate()
+                .context("reflection.required", true)
+                .context(
+                        "reflection.feedback",
+                        judgement.feedback()
+                )
+                .build();
+    }
+
+    @Override
+    public String getName() {
+        return "ReflectionAdvisor";
+    }
+
+    @Override
+    public int getOrder() {
+        return 50;
+    }
+}
+```
+
+```mermaid
+flowchart TD
+    A[调用 ReflectionAgent.call] --> B[委托给 SimpleReactAgent.call]
+    B --> C[组装 messages]
+    C --> D[调用 ChatClient]
+    D --> E[进入 Advisor 链]
+
+    E --> F[ReflectionAdvisor.adviseCall]
+    F --> G[chain.nextCall request]
+    G --> H[调用主 ChatModel]
+    H --> I[返回 ChatClientResponse]
+
+    I --> J{是否包含 ToolCall}
+
+    J -- 是 --> K[ReflectionAdvisor 直接返回]
+    K --> L[SimpleReactAgent 执行工具]
+    L --> M[添加 ToolResponseMessage]
+    M --> D
+
+    J -- 否 --> N[提取当前最终答案]
+    N --> O[ReflectionAdvisor 调用 reflect]
+    O --> P[反思模型返回 ReflectionJudgement]
+
+    P --> Q{passed 是否为 true}
+
+    Q -- 是 --> R[返回原始 response]
+    R --> S[SimpleReactAgent 返回最终答案]
+
+    Q -- 否 --> T[设置 reflection.required]
+    T --> U[设置 reflection.feedback]
+    U --> V[SimpleReactAgent 读取 context]
+
+    V --> W{是否达到 maxReflectionRounds}
+    W -- 否 --> X[反馈加入 messages]
+    X --> D
+
+    W -- 是 --> Y[返回当前答案]
+```
+
+```
+进入 Advisor
+    ↓
+chain.nextCall(request)
+    ↓
+主模型生成最终答案
+    ↓
+ReflectionAdvisor 评估
+    ↓
+是否通过？
+    ├── 是：直接返回答案
+    │
+    └── 否：写入 reflection.required
+               写入 reflection.feedback
+                    ↓
+              SimpleReactAgent 读取
+                    ↓
+              反馈加入 messages
+                    ↓
+              重新调用主模型
+```
+
 ### PlanAct
 
 #### 核心流程
@@ -6857,9 +8096,137 @@ Tool  -> Model / Exit
 
 - **工程常用混合：外层 Plan，内层 ReAct**（大任务拆解，子任务动态处理）
 
-### Reflection
+![image.webp](https://img.f3f3.top/picgo/1788677840618_image.webp)
 
-**让大语言模型（LLM）在完成任务后，对其自身的行为或输出进行批判性反思，并基于反思结果进行改进**。
+**在复杂、多步骤任务中，保证每一步的决策、执行和结果都可控、可追踪、可修正**
+
+**规划、执行、批判、压缩、迭代与总结6个过程**
+
+```
+Plan：生成工具执行计划
+    ↓
+Execute：执行计划中的工具任务
+    ↓
+Critique：检查当前结果是否满足用户目标
+    ↓
+继续下一轮，或总结答案
+```
+
+#### 状态实体
+
+##### OverAllState 
+
+**用于描述 Agent 的全局执行状态；**
+
+```
+public static class OverAllState {
+
+    // 会话 ID
+    private final String conversationId;
+
+    // 用户最初的问题
+    private final String question;
+
+    // 当前完整上下文
+    private final List<Message> messages =
+            new ArrayList<>();
+
+    // 每一轮 Plan、Execute、Critique 的结果
+    private final List<PlanRoundState> rounds =
+            new ArrayList<>();
+
+    // 当前执行轮次
+    private int round = 0;
+}
+```
+
+##### PlanRoundState
+
+**PlanRoundState 用于记录某一轮 Plan & Execute 的完整结果**
+
+```
+public record PlanRoundState(
+        int round,
+        List<PlanTask> plan,
+        Map<String, TaskResult> results,
+        CritiqueResult critique
+) {
+}。
+第几轮，本轮计划+本轮任务结果+本轮批判结果
+```
+
+##### PlanTask
+
+**PlanTask 表示当前轮次下生成的执行计划，会随着迭代动态调整**
+
+```
+public record PlanTask(
+        String id,
+        String instruction,
+        int order
+) {
+}
+
+```
+
+```
+order 相同：
+    可以并行执行
+order 不同：
+    按顺序执行
+order=1：
+    第一阶段
+order=2：
+    依赖第一阶段结果
+```
+
+#####  CritiqueResult 
+
+**用于刻画每一轮执行完成后的评估结论。**
+
+```
+public record CritiqueResult(
+        boolean passed,
+        String feedback
+) {
+}
+{
+  "passed": false,
+  "feedback": "缺少未来七天天气趋势，请继续查询。"
+}
+```
+
+#### 流程
+
+```
+用户问题
+    ↓
+初始化 OverAllState
+    ↓
+Plan：生成工具任务计划
+    ↓
+Execute：执行计划
+    ↓
+Critique：判断目标是否完成
+    ↓
+是否通过？
+    ├── 是：Summarize，生成最终答案
+    └── 否：保存反馈，进入下一轮 Plan
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### 人工确认
 

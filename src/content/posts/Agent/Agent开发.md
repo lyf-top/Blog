@@ -9674,31 +9674,179 @@ next constraint: 必须提供 city
 
 ## 长期记忆
 
-初识
+### 初识
 
-Mem0
+- **长期记忆使得跨对话也能有记忆，记住用户偏好**
+- **短期记忆conversation id限制**
 
+**长期记忆一定是持久化记忆，但是持久化记忆(Mysql,Redis)不一定是长期记忆**
 
+**实现方式**
 
+**向量化存储 + 向量检索**
 
+- **将文本（如对话片段、知识条目）通过嵌入模型转换为向量。**
+- **存入向量数据库（如 Pinecone、Weaviate、Chroma、Milvus）。**
+- **在需要时，用当前查询生成嵌入，进行相似性搜索（ANN 检索）召回相关记忆。**
 
+**结构化数据库**
 
+- 存储用户档案、任务日志、配置信息等结构化数据（如 SQL/NoSQL）。
+- 适用于精确查询（如“用户上次购买时间”）。
 
+**图数据的存储**用户画像、关联关系通过图数据库维护
 
+**混合记忆架构**结合向量检索（语义记忆）与结构化存储（事实记忆）、图数据库。例如：用向量库存对话摘要，用关系库存用户 ID 和偏好设置。
 
+**用户配置/规则文件**如 Cursor 的 `.cursor/rules`文件，用户显式定义偏好、约束、项目规范等，作为系统提示的一部分。
 
+**微调**微调也是一种长期记忆方案，就是使用用户的历史交互数据微调一个专属模型副本。
 
+### Mem0
 
+**Mem0它并不是个存储，他只是一个框架，由 LLM 驱动、向量+图双引擎支撑、协议标准化、完全本地可控的 AI 记忆中间件**
 
+- **记忆提取**：利用记忆分析器提取用户偏好和意图转换为结构化记忆条目
+- **向量化与存储**：每条记忆被嵌入成向量，向量存储在向量数据库中，并关联到特定用户 ID，支持元数据（如时间戳、来源对话 ID）以便后续过滤或排序
+- **记忆检索**:Mem0 根据当前用户输入查询向量数据库，通过相似度搜索召回最相关的过往记忆。可结合时间衰减、相关性评分等策略对记忆进行重排序
+- **上下文注入与生成,记忆去重与演化**
 
+### **原理**
 
+- **LLM**：负责记忆提取和自然语言理解
+- **向量数据库**：用于高效语义检索，将对话中提取的关键信息嵌入为高维向量。
+- **Embedding模型*****：***用于将记忆内容做向量化嵌入
+- **图数据库（可选）**：用于追踪实体之间的关系（如“爱丽丝的朋友是约翰”），支持复杂的情境推理。
+- **sqlLite数据库（内置）**：本地存储记忆历史
 
+**添加记忆**
 
+- 利用LLM 提取用户偏好，冲突检测，自动处理检测合并新旧偏好
+- 结构化存储：内容被向量化并存入向量库；
+- 实体和关系被提取并存入图数据库；
+- 支持附加元数据（如 `category: movies`, `importance: high`）。
 
+![image.webp](https://img.f3f3.top/myphoto/1789264151280_image.webp)
 
+**检索记忆**
 
+**查询理解：LLM 对用户问题进行语义优化**
 
+**多路检索**
 
+- **向量搜索：基于语义相似度召回相关记忆；**
+- **图查询：根据实体关系扩展上下文（如“谁是蜘蛛侠？” → “彼得是蜘蛛侠”）。**
+
+**结果排序：综合相关性、时效性、重要性等维度返回最匹配的记忆**
+
+![image.webp](https://img.f3f3.top/myphoto/1789264304948_image.webp)
+
+### 部署
+
+- **把mem0暴露成一个REST Api**
+- [lyf-top/Mem0Install: Mem0部署](https://github.com/lyf-top/Mem0Install)
+- 启动成功后，可以通过http://localhost:8888/docs 访问。
+
+进行记忆的CRUD调用之前，需要调一下/configure方法，做初始化
+
+### SpringAi
+
+#### 依赖
+
+```
+<dependency>
+    <groupId>com.alibaba.cloud.ai</groupId>
+    <artifactId>spring-ai-alibaba-starter-memory-long</artifactId>
+    <version>1.1.0.0-M5</version>
+</dependency>
+```
+
+**依赖了spring-ai-alibaba-starter-memory-mem0**
+
+- **Mem0ServiceClient调用他的configure方法,进行CRUD**
+- **Mem0ChatMemoryAdvisor**
+
+***spring-ai-alibaba-autoconfigure-memory-long***
+
+**一些配置和初始化的东西**
+
+#### 配置项
+
+```
+spring:
+  ai:
+    alibaba:
+      mem0:
+        client:
+          base-url: http://127.0.0.1:8888
+          timeout-seconds: 120
+        server:
+          version: v1.0.0
+          vector-store:
+            provider: pgvector
+            config:
+              host: postgres
+              port: 5432
+              dbname: postgres
+              user: postgres
+              password: postgres
+              collection-name: memories
+          graph-store:
+            provider: neo4j
+            config:
+              url: bolt://neo4j:7687
+              username: neo4j
+              password: mem0graph
+          llm:
+            provider: openai
+            config:
+              api-key: <你自己的KEY>
+              temperature: 0.2
+              model: deepseek-v3
+              openai-base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+          embedder:
+            provider: openai
+            config:
+              api-key: <你自己的KEY>
+              model: text-embedding-v4
+              openai-base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+#### 实现
+
+```
+@RestController
+@RequestMapping("/longTermMemory")
+public class LongTermMemoryController implements InitializingBean {
+
+    @Autowired
+    private DashScopeChatModel chatModel;
+
+    private ChatClient chatClient;
+
+    @Autowired
+    private VectorStore mem0MemoryStore;
+
+    @RequestMapping("/chat")
+    public String chat(String message, String userId) {
+        return chatClient.prompt(message)
+                .advisors(
+                        req -> req.params(Map.of(USER_ID, userId))
+                )
+                .call().content();
+    }
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        Mem0ChatMemoryAdvisor mem0ChatMemoryAdvisor = Mem0ChatMemoryAdvisor.builder(mem0MemoryStore).build();
+        this.chatClient = ChatClient.builder(chatModel)
+                .defaultAdvisors(mem0ChatMemoryAdvisor)
+                .build();
+    }
+}
+```
+
+#### advisor
 
 ## Harness
 
@@ -9721,15 +9869,97 @@ Mem0
 
 ## Skill
 
+###  初识
 
+- **把已经验证有效的做事方式抽象成独立能力模块，**
+- **让 Agent 在需要时自动加载和执行**
+- **大模型能力可复用、可管理的工程化机制**
 
+```
+my-skill/           # 技能名称
+├── SKILL.md        # 必选：技能的介绍说明与指令约束
+├── scripts/        # 可选：可执行的脚本
+├── references/     # 可选：可参考的示例文件
+└── assets/         # 可选：图片等资源文件
+```
 
+### 结构
+
+ **Skill 的入口定义 + 指令规范**，由两个部分组成：**Frontmatter（元数据）** + **Instruction（指令正文）**
+
+ **Instruction 本质上就是一份面向专业领域、特定功能的高质量 Prompt**。
+
+- **为后续的 Script、Reference 提供清晰的使用说明和调用指引**
+- **instruction 负责告诉 Agent 怎么做，Reference 负责在需要时补充细节**
+
+```
+Frontmatter（元数据）
+---
+name: pdf-processing  技能唯一标识（agent 用它来识别技能）
+description: Extract text and tables from PDF files, fill forms, merge documents. 简要说明技能做什么、在什么情况应该被激活
+---
+
+# PDF Processing
+
+## When to use this skill
+Use this skill when the user needs to work with PDF files...
+
+## How to extract text
+1. Use pdfplumber for text extraction...
+
+## How to fill forms
+```
+
+- **自动扫描指定的 Skill 目录**
+- **只读取被 `---` 包裹的 Frontmatter 元数据**
+- **基于 `name` 和 `description` 完成技能发现与能力匹配**
+
+**只有当 Agent 判断当前任务确实需要该 Skill 时，才会进一步加载 SKILL.md 中的指令正文内容**
+
+- MCP 关注的是 **Agent 如何连接外部世界、外部工具**，它定义的是工具如何被暴露给大模型使用；
+- Script 关注的是**在某一个具体 Skill内，哪些步骤必须用确定性代码来完成**
+
+### 渐进式披露
+
+| 层级 | 组件名称    | 内容类型                              | 加载策略                      | Token 消耗权重         | 设计目的                                           |
+| ---- | ----------- | ------------------------------------- | ----------------------------- | ---------------------- | -------------------------------------------------- |
+| L1   | Metadata    | Skill 名称、描述、版本号等元数据      | Always-On（常驻）             | 极低（< 1%）           | 供 Agent 进行技能发现、路由决策与意图识别          |
+| L2   | Instruction | `SKILL.md` 正文中的执行规则与操作流程 | On-Demand（命中后加载）       | 中等（约 5%～10%）     | 定义具体的业务处理逻辑、执行步骤与 SOP             |
+| L3   | Reference   | 外部文档、手册、规范、示例等补充资料  | Context-Triggered（条件触发） | 高（可变）             | 提供当前任务所需的领域知识，用完即弃               |
+| L4   | Script      | Python、Shell 等可执行脚本            | Execution-Only（仅执行）      | 近似为零（不读取代码） | 通过确定性代码完成复杂处理，并实现必要的外部副作用 |
+
+### claudecode
+
+[Node.js — 在任何地方运行 JavaScript](https://nodejs.org/zh-cn)
+
+```
+npm install -g @anthropic-ai/claude-code
+claude --version
+```
+
+https://www.messci.com/
 
 
 
 
 
 ## AgentScope
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -7764,6 +7764,8 @@ processChunk 判断本轮模式
 
 ### Reflection
 
+#### 初识
+
 **让大语言模型（LLM）在完成任务后，对其自身的行为或输出进行批判性反思，并基于反思结果进行改进**。
 
 **ReflectionAgent 本质上是对 SimpleReactAgent 的封装**
@@ -7914,6 +7916,8 @@ public static void main(String[] args) {
 
 #### Advisor
 
+ReflectionAdvisor的核心组件
+
 ```
 //callController非流式调用
 public class ReflectionAdvisor implements CallAdvisor {
@@ -7977,6 +7981,7 @@ ReflectionAdvisor 评估最终文本
         String question =extractQuestion(request.prompt());
 
 //第六步：调用反思模型评估回答。
+//结构化输出
         ReflectionJudgement judgement =
                 reflect(question, answer);
 
@@ -8080,7 +8085,7 @@ ReflectionAdvisor 评估
 - **Executor**：按顺序逐条执行，中间一般不做大改
 - （可选）**Replan**：失败时局部调整计划
 
-#### 特点
+**特点**
 
 - ✅ **稳定、高效、可控**：全局最优，步骤清晰，不易跑偏
 
@@ -8088,7 +8093,7 @@ ReflectionAdvisor 评估
 
 - ❌ **灵活性差**：前期规划错了，后面容易一路错到底
 
-#### 区别
+**区别**
 
 - **不确定、要实时反馈、探索型 → ReAct**
 
@@ -8161,23 +8166,14 @@ public record PlanRoundState(
 
 ```
 public record PlanTask(
+//任务id
         String id,
+//任务指令
         String instruction,
+//排序（越小越先执行，相同则表示可以并发）
         int order
 ) {
 }
-
-```
-
-```
-order 相同：
-    可以并行执行
-order 不同：
-    按顺序执行
-order=1：
-    第一阶段
-order=2：
-    依赖第一阶段结果
 ```
 
 #####  CritiqueResult 
@@ -8186,7 +8182,9 @@ order=2：
 
 ```
 public record CritiqueResult(
+//是否批判通过
         boolean passed,
+ //不通过的理由和建议
         String feedback
 ) {
 }
@@ -8196,45 +8194,407 @@ public record CritiqueResult(
 }
 ```
 
+#### 规划
+
+- **规划阶段不执行任务，不得出结论，仅是对全局状态进行判断，是否需要工具来推进计划，根据planRoute上次的执行结构来判断**
+- **生成的是结构化的执行计划，每个任务对应一个具体的工具**
+- **是否存在依赖关系每个任务并行或串行**
+
+```
+private List<PlanTask> generatePlan(OverAllState state) {
+    // 渲染工具描述信息
+    String toolDesc = renderToolDescriptions();
+    
+    BeanOutputConverter<List<PlanTask>> converter = new BeanOutputConverter<>(new ParameterizedTypeReference<>() {
+    });
+
+    Prompt prompt = new Prompt(List.of(
+            new SystemMessage("""
+                    你是【执行计划生成器】。
+
+                    当前是迭代的第 %s 轮次。
+
+                    你的职责：
+                    - 判断是否需要【调用工具】来推进问题解决；
+                    - 如果不需要任何工具调用，返回“无需执行计划”；
+                    - 如果需要，生成【仅包含工具调用的执行计划】。
+
+                    ## 重要规则（必须严格遵守）
+
+                    1. 你只能规划【工具调用型任务】；
+                       - 每一个 task 都必须明确对应一个具体工具；
+                       - instruction 中必须显式包含工具名称。
+
+                    2. 严禁规划以下内容：
+                       - 总结、分析、对比、写报告、生成结论；
+                       - 整合信息、输出答案、给出建议；
+                       - 任何不直接调用工具的纯文本任务。
+
+                    3. 如果问题已经具备作答条件，或后续由其他智能体负责总结：
+                       - 返回一个对象，且 id = null；
+                       - 表示“无需生成工具执行计划”。
+
+                    4. 支持并行与串行：
+                       - order 相同表示可并行执行；
+                       - 如果没有明确依赖关系，尽量并行（order 相同）；
+                       - 如果是有先后关系，order数字小的先执行，并在后续指令中也尽可能的指明依赖前序的工具结果信息。
+
+                    5. 输出必须是严格的 JSON 数组：
+                       - 不要任何额外文字、解释或注释；
+                       - 不要输出 tool_call 或函数调用。
+
+                    6. instruction 只能是自然语言的【工具调用指令】，
+                       用于指导后续执行模块解析并调用工具。
+
+                    ## 可用工具说明（仅用于规划参考）
+                    %s
+
+                    ## 输出格式（严格 JSON）
+
+                    示例1：无需工具执行计划
+                    [
+                      {
+                        "id": null,
+                        "instruction": "无需调用任何工具",
+                        "order": 0
+                      }
+                    ]
+
+                    示例2：需要工具执行计划（并行）
+                    [
+                      {
+                        "id": "task-1",
+                        "instruction": "调用 <工具名> 工具，执行 <明确查询或操作>",
+                        "order": 1
+                      },
+                      {
+                        "id": "task-2",
+                        "instruction": "调用 <工具名> 工具，执行 <明确查询或操作>",
+                        "order": 1
+                      }
+                    ]
+                    
+                    示例3：具有先后关系的执行计划（串行）
+                    [
+                      {
+                        "id": "task-1",
+                        "instruction": "调用 <工具名> 工具，执行 <明确查询或操作>，获取XX结果",
+                        "order": 1
+                      },
+                      {
+                        "id": "task-2",
+                        "instruction": "根据task-1的执行结果，调用 <工具名> 工具，执行 <明确查询或操作>",
+                        "order": 2
+                      }
+                    ]
+                    
+                    示例4：具有先后关系的执行计划（并行+串行）
+                    [
+                       {"id":"task-1","instruction":"调用 XXX 工具，执行<明确查询或操作>","order":1},
+                       {"id":"task-2","instruction":"调用 XXX 工具，执行<明确查询或操作>","order":1},
+                       {"id":"task-3","instruction":"根据 task1 和 task-2 的结果，调用 XXX 工具，执行<明确查询或操作>","order":2}
+                     ]
+
+                    ## 输出format
+                    %s
+                    
+                    """.formatted(state.round, toolDesc,converter.getFormat())),
+            new UserMessage(renderMessages(state.getMessages()))
+    ));
+//模型依据系统提示词回答
+    String json = chatModel.call(prompt).getResult().getOutput().getText();
+//将结果利用converter封装成Plantask
+    List<PlanTask> planTasks = converter.convert(json);
+    return planTasks;
+}
+```
+
+- **renderToolDescriptions遍历toolcallback获取工具名称和描述**
+- **结构化输出List<PlanTask>利用BeanOutputConverter封装**
+- **id值为null则表明是个简单任务直接输出**
+
+**输出格式**
+
+```
+[
+    PlanTask(
+        "task-1",
+        "调用 getWeather 工具，查询北京今天的天气",
+        1
+    ),
+    PlanTask(
+        "task-2",
+        "调用 search 工具，搜索北京周末天气预警",
+        1
+    )
+]
+```
+
+**将PlanTask写进AssistantMessage**
+
+```
+messages
+├── UserMessage(用户问题)
+└── AssistantMessage(Execution Plan)
+```
+
+#### 执行
+
+```
+executePlan(plan, state);public String callInternal(String conversationId, String question) {
+	//判断是否需要记忆
+        boolean useMemory = conversationId != null && chatMemory != null;
+//创建全局状态
+        OverAllState state = new OverAllState(conversationId, question);
+
+        // 加载历史记忆到上下文messages中
+        if (useMemory) {
+            List<Message> history = chatMemory.get(conversationId);
+            if (!CollectionUtils.isEmpty(history)) {
+                history.forEach(state::add);
+            }
+        }
+
+        // 当前用户问题
+        state.add(new UserMessage(question));
+
+        // 当前问题存入memory
+        if (useMemory) {
+            chatMemory.add(conversationId, new UserMessage(question));
+        }
+
+        while (maxRounds <= 0 || state.getRound() < maxRounds) {
+            state.nextRound();
+            log.info("===== Plan-Execute Round {} =====", state.getRound());
+
+            // 1.生成计划
+            List<PlanTask> plan = generatePlan(state);
+            log.info("【Execution Plan】\n\n" + plan);
+            state.add(new AssistantMessage("【Execution Plan】\n" + plan));
+
+            if (plan.isEmpty() || plan.stream().allMatch(t -> t.id() == null)) {
+                log.info("===== No execution needed, direct answer =====");
+                break;
+            }
+
+            // 2.执行
+            Map<String, TaskResult> results = executePlan(plan, state);
+
+            // 3.批判
+            CritiqueResult critique = critique(state);
+
+//            state.addRound(new PlanRoundState(
+//                    state.getRound(), plan, results, critique
+//            ));
+
+            if (critique.passed()) {
+                log.info("===== Goal satisfied, finish =====");
+                break;
+            }
+            log.info("===== critique Goal not satisfied, continue round =====,\n reason is {} ", critique.feedback);
+            state.add(new AssistantMessage("""
+                    【Critique Feedback】
+                    %s
+                    """.formatted(critique.feedback())));
+            // 4. 压缩context
+            compressIfNeeded(state);
+        }
+        if (state.round == maxRounds)
+            log.info("===== Max rounds reached, force finish =====");
+
+        // 5.总结输出
+        return summarize(state);
+    }
+```
+
+- **executePlan(List<PlanTask>, OverAllState)**
+- **利用oder进行分组，无论任务成功还是失败，执行结果都会被统一记录下来**
+
+```
+ Map<Integer, List<PlanTask>> grouped =
+                plan.stream().collect(Collectors.groupingBy(PlanTask::order));
+```
+
+**记录每个oder对应工具的执行状态，使得可以回顾**
+
+```
+Map<String, String> accumulatedResults = new ConcurrentHashMap<>();
+```
+
+**保存当前的工具快照**
+
+```
+for (Integer order : new TreeSet<>(grouped.keySet())) {
+
+            // 保存当前工具执行快照
+            String dependencySnapshot = renderDependencySnapshot(accumulatedResults);
+
+            List<PlanTask> tasks = grouped.get(order);
+```
+
+- **开启异步线程,并获取许可**
+- **toolSemphore用于限制并发工具调用的数量**。
+- **具体的工具执行则交由executeWithRetry实现的SimpleReactAgent 完成**
+- **并设置maxToolRetries最大重试次数**
+- **将每个工具状态添加到AssistantMessage**
+
+```
+List<CompletableFuture<Void>> futures = tasks.stream()
+                    .map(task -> CompletableFuture.runAsync(() -> {
+```
+
+```
+try {
+                            // 获取执行许可
+                            toolSemaphore.acquire();
+                            if(task == null || StringUtils.isBlank(task.id())){
+                                return;
+                            }
+                            TaskResult result = executeWithRetry(task, dependencySnapshot);
+                            results.put(task.id(), result);
+
+                            if (result.success() && result.output() != null) {
+                                accumulatedResults.put(task.id(), result.output());
+                            }
+
+                            state.add(new AssistantMessage("""
+                                【Completed Task Result】
+                                taskId: %s
+                                success: %s
+                                result:
+                                %s
+                                error:
+                                %s
+                                【End Task Result】
+                                """.formatted(
+                                    task.id(),
+                                    result.success(),
+                                    result.output(),
+                                    result.error()
+                            )));
+
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+
+                            results.put(task.id(),
+                                    new TaskResult(
+                                            task.id(),
+                                            false,
+                                            null,
+                                            "Task execution interrupted"
+                                    ));
+                        } finally {
+                            // 释放许可
+                            toolSemaphore.release();
+                        }
+                    }))
+                    .toList();
+```
+
+```
+PlanExecuteAgent
+    ↓
+executePlan
+    ↓
+executeWithRetry
+    ↓
+SimpleReactAgent.call()
+    ↓
+模型返回 AssistantMessage(ToolCall)
+    ↓
+SimpleReactAgent 执行 ToolCallback
+    ↓
+添加 ToolResponseMessage
+    ↓
+再次调用模型
+    ↓
+返回当前任务结果
+```
+
+**压缩上下文触发阈值为1000字符**
+
+```
+   private String summarize(OverAllState state) {
+        Prompt prompt = new Prompt(List.of(
+                new SystemMessage(PlanExecutePromptsFactory.buildPrompts(planExecutePrompts).getSummarizePrompt()),
+                new UserMessage("""
+                        【用户原始问题】
+                        %s
+                        
+                        【执行上下文（含工具结果）】
+                        %s
+                        """.formatted(
+                        state.getQuestion(),
+                        renderMessages(state.getMessages())
+                ))
+        ));
+
+        String answer = chatModel.call(prompt).getResult().getOutput().getText();
+        // 追加记忆
+        if (state.conversationId != null && chatMemory != null) {
+            chatMemory.add(state.conversationId, new AssistantMessage(answer));
+        }
+        return answer;
+    }
+```
+
 #### 流程
 
 ```
 用户问题
-    ↓
-初始化 OverAllState
-    ↓
-Plan：生成工具任务计划
-    ↓
-Execute：执行计划
-    ↓
-Critique：判断目标是否完成
-    ↓
-是否通过？
-    ├── 是：Summarize，生成最终答案
-    └── 否：保存反馈，进入下一轮 Plan
+  ↓
+创建全局状态 OverAllState
+  ↓
+  //进入轮次循环
+第 1 轮
+  ├── Plan：生成工具任务
+  ├── Execute：执行工具任务
+  ├── Critique：判断目标是否完成
+  └── Compress：必要时压缩上下文
+  ↓
+第 2 轮
+  ├── 基于上一轮结果和批判反馈重新规划
+  ├── 执行缺失任务
+  ├── 再次批判
+  └── 必要时继续压缩
+  ↓
+目标完成 / 无需工具 / 达到最大轮次
+  ↓
+Summarize
+  ↓
+最终答案
 ```
 
+```
+public static void main(String[] args) {
+        ChatModel chatModel = ChatModelConfig.getChatModel();
 
+        ToolCallback[] toolCallbacks = ToolCallbacks.from(new WeatherService(), new SearchService());
 
+        ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(20).build();
 
+        PlanExecuteAgent agent = PlanExecuteAgent.builder()
+                .chatModel(chatModel)
+                .tools(toolCallbacks)
+                .maxRounds(3)
+                .maxToolRetries(2)
+                .chatMemory(chatMemory)
+                .contextCharLimit(1000).build();
 
-
-
-
-
-
-
-
-
-
+        String result = agent.call("""
+                请你先查询北京今天的天气，再搜索本周末北京天气的预警情况，并基于本周末北京的天气预警情况，搜索北京本周末适合旅游打卡的景点有哪些，最终生成一份不少于 500 字的综合天气分析报告。
+                """);
+```
 
 ### 人工确认
+
+#### **配置中断**
 
 **在用户允许的边界内，让 Agent 自动运行；一旦即将执行高风险或高不确定性的动作，必须经过人工确认。**
 
 **Spring AI Alibaba对 Agent HITL 的支持，通过HumanInTheLoopHook实现，这是Hook机制**
 
-**配置中断**：
+`Hook`本质上就是一种拦截器，它拦截的并不是用户输入，而是**模型推理完成之后产生的 Tool Call**，并在工具真正执行之前，判断这些调用是否需要经过人类审批
 
 - **在创建 Agent 时，利用approvalOn方法配置哪些工具需要人工审批；**
 - **并配置MemorySaver记忆中断**
@@ -8263,13 +8623,16 @@ ReactAgent agent = ReactAgent.builder()
   .build();
 ```
 
-**响应中断**：
+#### **响应中断**
 
 **调用 Agent 运行逻辑，若触发人工中断，返回中断元数据；**
 
-**要执行工具时interrupt 在真正执行前拦住它，返回 InterruptionMetadata，把工具名、参数、说明都暴露出来。**
+**工具列表**
 
-**interrupt 的实际调用是在NodeExecutor类中执行的。**
+- **要执行工具时interrupt 在真正执行前拦住它，返回 InterruptionMetadata，把工具名、参数、说明都暴露出来。**
+- **interrupt 的实际调用是在NodeExecutor类中执行的。**
+
+**上下文**
 
 **有没有人工反馈**
 
@@ -8327,10 +8690,10 @@ if (result.isPresent() && result.get() instanceof InterruptionMetadata) {
 }
 ```
 
-**恢复执行**
+#### **恢复执行**
 
-- 将人工决策反馈传回给 Agent，并继续执行 React 逻辑。
-- 人工反馈通过 RunnableConfig回传，Agent 读取后继续跑
+- **将人工决策反馈传回给 Agent，并继续执行 React 逻辑。**
+- **人工反馈通过 RunnableConfig回传，Agent 读取后继续跑**
 
 ```
 List<InterruptionMetadata.ToolFeedback> toolFeedbacks =
@@ -8363,6 +8726,387 @@ if (finalResult.isPresent()) {
               System.out.println("执行完成");
               System.out.println("最终结果: " + finalResult.get());
 }
+```
+
+#### SpringAI
+
+##### **会话状态**
+
+```
+List<Message> messages = new ArrayList<>();
+
+messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
+messages.add(new UserMessage(question));
+//创建会话级别状态
+Map<String, Object> context = new ConcurrentHashMap<>();
+context.put(
+        HITLAdvisor.HITL_STATE_KEY,
+        new HITLState()
+);
+```
+
+```
+context
+└── hitl.state
+    ├── consumedToolCallIds
+    └── approvedToolNames
+```
+
+**模型返回toolcall**
+
+```
+ChatClientResponse response = chatClient
+        .prompt()
+        .messages(messages)
+        .advisors(a -> context.forEach(a::param))
+        ///把 context 传入本次 ChatClient 请求
+        
+        .call()
+        .chatClientResponse();
+```
+
+```
+HITLState hitlState =
+        (HITLState) chatClientRequest
+                .context()
+                .get(HITLAdvisor.HITL_STATE_KEY);
+```
+
+**`HITLAdvisor` 才能获取到会话状态**
+
+```
+ChatResponse
+└── AssistantMessage
+    └── ToolCall
+        ├── id = call-001
+        ├── name = getWeather
+        └── arguments = {"city":"北京"}
+   //AssistantMessage.ToolCall     
+```
+
+##### HITLAdvisor 
+
+**工具列表**:首先放行工具调用，此步不执行，仅获取toolcall存在状态
+
+```
+ChatClientResponse response =
+        callAdvisorChain.nextCall(chatClientRequest);
+//是否存在工具调用
+//无工具调用直接返回
+if (!response.chatResponse().hasToolCalls()) {
+    return response;
+}
+//有工具调用逐个判断
+if (!interceptToolNames.contains(tc.name())) {
+    nonInterceptTools.add(tc);
+    continue;
+}
+是否已经审批，//审批过自动放行
+  if (hitlState != null
+        && hitlState.isToolNameApproved(tc.name())) {
+    nonInterceptTools.add(tc);
+    continue;
+}
+//未审批封装成pendingToolcall
+pending.add(new PendingToolCall(
+        tc.id(),
+        tc.name(),
+        tc.arguments(),
+        null,
+        "该工具需要用户手动确认"
+))     
+```
+
+**添加到上下文**
+
+```
+response.context().put(
+        HITLAdvisor.HITL_REQUIRED,
+        true
+);
+
+response.context().put(
+        HITLAdvisor.HITL_PENDING_TOOLS,
+        pending
+);
+```
+
+##### 中断调用
+
+**AgentResult 的实现**
+
+**AgentFinished**：表示任务已经完成，包含最终结果；
+
+**AgentInterrupted**：表示 HITL 中断，包含以下信息：
+
+- **待确认的工具列表（List）；**
+- **快照上下文 messages；**
+- **context 上下文状态。**
+
+**`run`方法的迭代循环中增加HITL_REQUIRED判断，**
+
+- **先执行不需要HITL的工具调用**
+- **满足则直接返回`AgentInterrupted`中断元数据**
+- **AgentInterrupted = 一张可恢复的执行快照**
+
+```
+if (Boolean.TRUE.equals(
+        response.context()
+                .get(HITLAdvisor.HITL_REQUIRED)
+)) {
+```
+
+```
+// 限定只有2个实现类
+public sealed interface AgentResult permits AgentFinished, AgentInterrupted {
+}
+
+public record AgentFinished(String content) implements AgentResult {
+}
+public record AgentInterrupted(List<PendingToolCall> pendingToolCalls,
+                               List<Message> checkpointMessages,
+                               Map<String, Object> context) implements AgentResult {
+}
+public AgentResult call(String question) {
+
+    List<Message> messages = new ArrayList<>();
+    messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
+    messages.add(new UserMessage(question));
+
+    Map<String, Object> context = new ConcurrentHashMap<>();
+    context.put(HITLAdvisor.HITL_STATE_KEY, new HITLState());
+
+    return run(messages, context);
+}
+
+private AgentResult run(List<Message> messages, Map<String, Object> context) {
+
+    int round = 0;
+//进行最大轮次数
+    while (true) {
+        round++;
+        if (maxRounds > 0 && round > maxRounds) {
+            return new AgentFinished(chatClient.prompt()
+                    .messages(messages)
+                    .advisors(a -> context.forEach(a::param))
+                    .call()
+                    .content());
+        }
+//调用模型
+        ChatClientResponse response = chatClient.prompt()
+                .messages(messages)
+                .advisors(a -> context.forEach(a::param))
+                .call()
+                .chatClientResponse();
+
+        // 增加判断HITL_REQUIRED，说明需要人工介入，返回中断元数据
+        if (Boolean.TRUE.equals(response.context().get(HITLAdvisor.HITL_REQUIRED))) {
+            
+            
+   // 先执行不需要 HITL 的工具调用，避免它们等待人工审批
+   //利用Assistant获取工具参数
+   
+            List<AssistantMessage.ToolCall> nonInterceptTools = (List<AssistantMessage.ToolCall>) response.context().get(HITLAdvisor.HITL_NON_INTERCEPT_TOOLS);
+            //添加到上下文中
+            if (nonInterceptTools != null && !nonInterceptTools.isEmpty()) {
+                messages.add(AssistantMessage.builder()                       .toolCalls(response.chatResponse().getResult().getOutput().getToolCalls())
+                        .build());
+                // 执行非拦截工具，把结果加入 messages
+                for (AssistantMessage.ToolCall tc : nonInterceptTools) {
+                    ToolCallback tool = findTool(tc.name());
+                    String result = tool.call(tc.arguments());
+                    messages.add(ToolResponseMessage.builder().responses(
+                            List.of(new ToolResponseMessage.ToolResponse(tc.id(), tc.name(), result))).build());
+                }
+            }
+            
+            
+			//直接返回中断拦截参数集合
+            return new AgentInterrupted(
+                    (List<PendingToolCall>) response.context().get(HITLAdvisor.HITL_PENDING_TOOLS),
+                    List.copyOf(messages),
+                    context
+            );
+        }
+          
+
+        if (!response.chatResponse().hasToolCalls()) {
+            return new AgentFinished(response.chatResponse().getResult().getOutput().getText());
+        }
+
+        AssistantMessage assistant = AssistantMessage.builder()
+                .toolCalls(response.chatResponse()
+                        .getResult()
+                        .getOutput()
+                        .getToolCalls()).build();
+
+        messages.add(assistant);
+
+        for (AssistantMessage.ToolCall tc : assistant.getToolCalls()) {
+
+            ToolCallback tool = findTool(tc.name());
+            String result = tool.call(tc.arguments());
+
+            messages.add(ToolResponseMessage.builder().responses(
+                    List.of(new ToolResponseMessage.ToolResponse(tc.id(), tc.name(), result))).build());
+        }
+    }
+}
+```
+
+```
+messages
+├── SystemMessage
+├── UserMessage
+├── AssistantMessage
+│   ├── ToolCall(getWeather)
+│   └── ToolCall(search)
+└── ToolResponseMessage
+    └── response(search)
+```
+
+**AssistantMessage 中包含两个 ToolCall，但当前只为 search 添加了 ToolResponseMessage**
+
+##### 恢复中断
+
+恢复流程由 `resume` 方法负责
+
+取出快照，恢复HITL状态hitlState
+
+非拦截工具通过最后一个消息是否有ToolResponseMessage
+
+过滤已处理的工具调用hitlState.markConsumed(fb.id())
+
+**hitlState.markToolNameApproved() 将该工具名称记录下来，这样同一会话中后续再次调用同名工具时，`HITLAdvisor 会自动放行**
+
+构建AssistantMessage(Toolcall)生成ToolResponseMessage
+
+由用户决策ToolResponseMessage是否添加到上下文
+
+```
+public AgentResult resume(AgentInterrupted interrupted, List<PendingToolCall> feedbacks) {
+//引入工具快照和待审核工具反馈
+//首先取回快照
+    List<Message> messages = new ArrayList<>(interrupted.checkpointMessages());
+    Map<String, Object> context = interrupted.context();
+//恢复HITL状态
+    HITLState hitlState = (HITLState) context.get(HITLAdvisor.HITL_STATE_KEY);
+
+    // 检查是否有非拦截工具已执行（通过判断最后一个消息是否是 ToolResponseMessage）
+    boolean hasNonInterceptExecuted = !messages.isEmpty() &&
+            messages.get(messages.size() - 1) instanceof ToolResponseMessage;
+
+    List<AssistantMessage.ToolCall> toolCalls = new ArrayList<>();
+
+// 过滤已处理的工具调用，避免重复 HITL
+    for (PendingToolCall fb : feedbacks) {      
+        if (hitlState.isConsumed(fb.id())) {
+            continue;
+        }
+        // 标记为已处理
+        hitlState.markConsumed(fb.id());
+
+//标记该工具名称为已审批，后续同名工具调用自动通过
+        if (fb.result() == PendingToolCall.FeedbackResult.APPROVED) {
+            hitlState.markToolNameApproved(fb.name());
+        }
+
+
+//构建AssistantMessage(Toolcall)方便以后调用生成ToolCallResponseMessage
+toolCalls.add(new AssistantMessage.ToolCall(fb.id(), "function", fb.name(), fb.arguments()));
+    }
+// 只有在没有非拦截工具执行的情况下，才需要补全 tool_call 消息
+    if (!toolCalls.isEmpty() && !hasNonInterceptExecuted) {
+        messages.add(AssistantMessage.builder().toolCalls(toolCalls).build());
+    }
+   
+   
+ // 将消费过的工具调用结果添加到消息中（用户进行决策）
+    for (PendingToolCall fb : feedbacks) {      
+        if (hitlState.isConsumed(fb.id())) {
+            String result;
+            if (fb.result() == PendingToolCall.FeedbackResult.REJECTED) {
+                result = "用户不同意执行此工具，工具名称：" + fb.name() + "，工具描述：" + fb.description();
+            } else {
+                // 这边同意和编辑简单处理，实际可以让用户重新编辑arguments
+                ToolCallback tool = findTool(fb.name());
+                result = tool.call(fb.arguments());
+            }
+            
+//工具执行结果添加到
+  messages.add(ToolResponseMessage.builder().responses(List.of(new ToolResponseMessage.ToolResponse(fb.id(), fb.name(), result))).build());
+        }
+    }
+
+    // 继续执行主循环
+    return run(messages, context);
+}
+```
+
+```
+RUNNING
+   ↓
+模型生成 ToolCall
+   ↓
+HITLAdvisor 判断
+   ├── 工具无需审批 ──→ EXECUTING
+   │                       ↓
+   │                 ToolResponseMessage
+   │                       ↓
+   │                    RUNNING
+   │
+   └── 工具需要审批 ──→ INTERRUPTED
+                           ↓
+                    用户 APPROVED
+                           ↓
+                       EXECUTING
+                           ↓
+                    ToolResponseMessage
+                           ↓
+                        RUNNING
+
+INTERRUPTED
+   ↓
+用户 REJECTED
+   ↓
+构造拒绝 ToolResponseMessage
+   ↓
+RUNNING
+   ↓
+模型决定替代方案或最终回答
+
+RUNNING
+   ↓
+没有 ToolCall
+   ↓
+FINISHED
+
+
+模型返回 ToolCall
+    ↓
+HITLAdvisor 拦截
+    ↓
+判断工具是否需要人工审批
+    ├── 不需要：Agent 直接执行
+    └── 需要：返回 AgentInterrupted
+                    ↓
+              用户审批
+                    ↓
+              resume 恢复执行
+                    ↓
+              添加 ToolResponseMessage
+                    ↓
+              再次调用模型
+```
+
+**关闭chatClient自动执行**
+
+```
+.internalToolExecutionEnabled(false)
+```
+
+```
+pendingToolCalls 数量==feedbacks 数量
 ```
 
 ### Multi
@@ -8651,13 +9395,300 @@ sequenceDiagram
 
 ## 上下文工程
 
+### 初识
 
+**Token**
 
+**所有输入和输出文本都会被转换为 Token 序列,1个Token约对应3～4个英文字符**；**通常约对应 1.5～1.8 个中文字符**
 
+**Prompt**
 
+**Context 指的是模型在生成当前回复时所能“看到”的全部信息**，通常包括：
 
+- **用户当前的 Prompt（System Prompt+User Prompt）；**
+
+  **之前的对话历史（包括模型输出，工具执行结果）；**
+
+- **工具清单（MCP&Function Calling）**
+
+- **ReAct Agent的Thought/Action/Observation等内容**
+
+- **外部知识注入（如 RAG 检索结果）。**
+
+**Memory**
+
+- **短期记忆**：即对话上下文（Context），随对话结束而消失。
+- **长期记忆**：通过外部数据库、向量存储等方式保存用户偏好、历史行为等，在后续对话中检索使用。
+
+**上下文太长会带来什么问题**
+
+- **Token 爆炸和上下文窗口超限**
+- **中间信息被忽略**
+- **错误信息引入**
+
+**错误事实被后续推理放大，应该保存结构化信息**
+
+```
+{
+  "taskId": "task-2",
+  "tool": "search",
+  "query": "北京周末天气预警",
+  "success": true,
+  "source": "search-service",
+  "result": "..."
+}
+```
+
+- **上下文分散**
+
+**重要信息被无关内容淹没，进行上下文压缩或者过滤**
+
+```
+ya'suo
+结构化状态由代码保存
+自然语言内容才交给模型压缩
+class AgentState {
+    String userGoal;
+    List<TaskResult> taskResults;
+    CritiqueResult lastCritique;
+    List<String> openIssues;
+}
+```
+
+- **上下文混乱**
+
+**工具和选项太多，模型难以选择，设置工具路由**
+
+```
+当前问题属于天气查询
+    ↓
+只加载 weather 相关工具
+    ↓
+主 Agent 执行
+```
+
+- **上下文冲突** 
+
+**多个相互矛盾的事实同时存在**
+
+**为信息增加时间和来源，明确优先级**
+
+```
+最新的权威工具结果  >旧工具结果>模型推断 >历史记忆
+{
+  "source": "search",
+  "createdAt": "...",
+  "taskId": "task-3",
+  "reliability": "unknown"
+}
+```
+
+### Write
+
+```mermaid
+flowchart LR
+    A[外部信息] --> B[Write 写入外部状态]
+    B --> C[Select 选择相关信息]
+    C --> D[注入当前 Context]
+    D --> E[LLM 推理]
+    E --> F[产生计划、工具调用或结果]
+    F --> G[保存新的状态]
+    G --> B
+
+    D --> H[Compress 压缩]
+    D --> I[Isolate 隔离到子 Agent 或沙盒]
+```
+
+**Write：把重要信息写入上下文之外,把信息持久化保存，以后需要时再取出来。**
+
+- **Scratchpad：短期工作记忆**
+
+```
+public static class OverAllState {
+    private final String question;
+    private final List<Message> messages;
+    private final List<PlanRoundState> rounds;
+    private int round;
+}
+```
+
+- **Long Term Memory：长期记忆**
+
+```
+长期记忆库
+    ↓
+根据当前问题检索相关内容
+    ↓
+只把相关内容注入本轮 Context
+```
+
+### Select
+
+**不是所有已经保存的信息，都应该进入当前上下文。**
+
+- **选择相关记忆,不需要加载用户全部历史会话**
+- **动态选择工具**
+- **选择相关规则,不同任务加载不同规则**
+
+### Compress
+
+- **删除对当前任务没有价值的信息，保留下一轮决策所必需的信息**
+- **结构化状态最好由代码维护，而不是完全交给模型改写**
+
+### Isolate
+
+**不要让所有任务共用一个巨大上下文。拆分并隔离上下文**
+
+- **多智能体隔离**
+
+```
+主 Agent Context
+    ├── 用户目标
+    ├── 子任务状态
+    └── 子 Agent 返回的结论
+
+天气 Agent Context
+    └── 天气查询相关信息
+
+搜索 Agent Context
+    └── 搜索任务相关信息
+    
+ PlanExecuteAgent
+    ↓
+SimpleReactAgent   
+```
+
+**`PlanExecuteAgent` 负责任务级调度，`SimpleReactAgent` 负责单个任务内部的工具调用。这本身就是一种上下文隔离。**
+
+- **沙盒隔离**
+
+```
+大文件
+    ↓
+保存到文件系统或对象存储
+    ↓
+Context 中只保留路径、ID、摘要和引用
+
+已将搜索结果保存到：
+/workspace/results/beijing-weather.json
+```
+
+**赋予 Agent 读写能力+大内容外存+上下文仅保留指针+可恢复压缩**
+
+### **渐进式披露**
+
+**先给模型一个目录，模型需要时再加载详细内容。**
+
+```
+能力目录
+    ↓
+模型选择能力
+    ↓
+加载详细规则
+    ↓
+执行任务
+```
+
+### KV Cache
+
+```
+模型推理
+    ↓
+调用工具
+    ↓
+得到观察结果
+    ↓
+把结果追加到上下文
+    ↓
+再次调用模型
+```
+
+- **每次请求都会包含大量相同的前缀**
+- **首次处理长上下文的 prefill 阶段，仍然需要处理整个输入。所以 Agent 设计中要尽量保证前缀稳定。**
+
+**提高缓存命中率**
+
+- **不要在 System Prompt 中放动态时间**
+
+```
+当前时间：{now}
+//将动态时间放到上下文的末尾
+```
+
+- **固定 Prompt 模板**
+
+**系统提示词，工具定义，消息结构**
+
+- **保持 JSON 字段顺序稳定**
+
+```
+{"city":"北京","days":7}  //token序列改变
+```
+
+- **尽量采用 append-only,不修改历史消息**
+- **分布式环境固定会话路由**
+
+### 前缀预填充
+
+**在上下文中保留所有工具的定义，不针对这个东西做修改，避免影响KV Cache，响应预填充+统一工具前缀等方案来遮蔽工具**
+
+**人为写入一部分固定的 token 序列作为“开头**
+
+```
+<|im_start|>assistant
+{"name": "browser_
+
+browser_search, browser_navigate
+```
+
+### 回顾问题
+
+执行很多工具时，忘记用户最初的问题
+
+在上下文末尾反复维护一个轻量任务
+
+```
+【Current Goal】
+生成北京周末旅游分析报告。
+
+【Completed】
+1. 已查询北京今日天气。
+
+【Pending】
+1. 确认周末天气预警。
+2. 根据预警推荐景点。
+3. 生成最终报告。
+```
+
+### 保留错误
+
+**错误不能简单删除，应该选择保留**
+
+```
+【Failed Action】
+tool: getWeather
+arguments: {}
+error: city 参数缺失
+next constraint: 必须提供 city
+```
 
 ## 长期记忆
+
+初识
+
+Mem0
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -8678,7 +9709,23 @@ sequenceDiagram
 
 
 
+
+
+
+
+
+
+
+
+
+
 ## Skill
+
+
+
+
+
+
 
 
 
@@ -8688,7 +9735,19 @@ sequenceDiagram
 
 
 
+## 微调
 
+
+
+
+
+
+
+
+
+## RAG评测
+
+## Agent评测
 
 ## 多agent
 

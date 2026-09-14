@@ -9945,9 +9945,108 @@ https://www.messci.com/
 
 ## AgentScope
 
+### 依赖
 
+| 对比维度 | AgentScope Java                        | Spring AI Alibaba                          |
+| :------: | -------------------------------------- | ------------------------------------------ |
+| 核心理念 | Agentic，自主型 Agent                  | Workflow，流程型 AI 应用                   |
+| 主要能力 | ReAct、工具调用、多 Agent 协作         | Graph 编排、状态管理、Checkpoint、人机协同 |
+| 适合场景 | Agent 自主规划、自主决策、动态调用工具 | 流程固定、节点明确、强调可控性的业务流程   |
+| 技术定位 | 面向 Agent 的独立开发框架              | Spring AI 生态的扩展                       |
+| 生态优势 | 阿里自研、路线和服务更自主             | Spring 生态集成更加自然                    |
+| 典型选择 | 自主型 Agent                           | Workflow 型 AI 应用                        |
 
+```
+<dependency>
+    <groupId>io.agentscope</groupId>
+    <artifactId>agentscope</artifactId>
+    <version>1.0.12</version>
+</dependency>
 
+<dependency>
+    <groupId>io.agentscope</groupId>
+    <artifactId>agentscope-spring-boot-starter</artifactId>
+    <version>1.0.12</version>
+</dependency>
+```
+
+### 调用Tool
+
+```
+创建 Toolkit
+    ↓
+注册 SimpleTools
+    ↓
+配置 DashScopeChatModel
+    ↓
+创建 ReActAgent
+    ↓
+封装用户消息 Msg
+    ↓
+调用 jarvis.call(msg)
+    ↓
+Agent 判断是否需要调用工具
+    ↓
+调用 get_time 工具
+    ↓
+获得工具结果
+    ↓
+Agent 生成最终回答
+```
+
+```
+public class AgentScopeHelloWorld {
+
+    public static void main(String[] args) {
+        // 准备工具
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new SimpleTools());
+
+        // 创建智能体
+        ReActAgent jarvis = ReActAgent.builder()
+                .name("Jarvis")
+                .sysPrompt("你是一个名为 Jarvis 的助手")
+                .model(DashScopeChatModel.builder()
+                        .apiKey("sk-0247a4b5f8854f4f9ff5fd284895ba9d")
+                        .modelName("qwen3-max")
+                        .build())
+                .toolkit(toolkit)
+                .build();
+
+        // 发送消息
+        Msg msg = Msg.builder()
+                .textContent("你好！Jarvis，现在几点了？")
+                .build();
+
+        Msg response = jarvis.call(msg).block();
+        System.out.println(response.getTextContent());
+    }
+}
+
+// 工具类
+class SimpleTools {
+    @Tool(name = "get_time", description = "获取当前时间")
+    public String getTime(
+            @ToolParam(name = "zone", description = "时区，例如：北京") String zone) {
+        return java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+```
+
+| API                  |                作用                |
+| -------------------- | :--------------------------------: |
+| `Toolkit`            |   管理工具，并将工具注册给 Agent   |
+| `@Tool`              |  声明一个可以被 Agent 调用的方法   |
+| `@ToolParam`         | 描述工具参数，帮助模型理解参数用途 |
+| `ReActAgent`         |    基于 ReAct 范式运行的智能体     |
+| `Msg`                | 封装用户消息、Agent 消息和工具消息 |
+| `DashScopeChatModel` |        对接阿里云百炼大模型        |
+| `jarvis.call(msg)`   |       向 Agent 发起一次调用        |
+| `.block()`           |   将响应式异步调用转换为同步等待   |
+
+### 流式输出
+
+### 结构化输出
 
 
 

@@ -10007,7 +10007,7 @@ public class AgentScopeHelloWorld {
                 .name("Jarvis")
                 .sysPrompt("你是一个名为 Jarvis 的助手")
                 .model(DashScopeChatModel.builder()
-                        .apiKey("sk-0247a4b5f8854f4f9ff5fd284895ba9d")
+                        .apiKey("sk-your-dashscope-api-key-here")
                         .modelName("qwen3-max")
                         .build())
                 .toolkit(toolkit)

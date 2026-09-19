@@ -10152,7 +10152,123 @@ public class SkillController {
 
 #### **原理**
 
+##### 注册
 
+- **SkillScanner 遍历 Skill 根目录下的子目录skill.md**
+
+- **SkillMetadata 中可能已经保存了完整正文，并注册到内存Map里**
+- **在模型真正调用 read_skill`之前，正文不会被放进模型上下文**
+- **SkillRegistry接口有两个实现类FileSystemSkillRegistry和ClasspathSkillRegistry**
+
+| 实现                      | 来源            | 特点                                                         |
+| ------------------------- | --------------- | ------------------------------------------------------------ |
+| `FileSystemSkillRegistry` | 文件系统目录    | 支持 user 和 project 两级 Skill；project 中的同名 Skill 覆盖 user 中的 Skill。 |
+| `ClasspathSkillRegistry`  | classpath / JAR | 兼容开发环境中的 classpath 资源和生产环境中的 JAR 资源。     |
+
+
+
+![mermaid-diagram.webp](https://img.f3f3.top/picgo/1789796121374_mermaid-diagram.webp)
+
+##### 摘要
+
+**通过 Advisor 或 Interceptor 机制，把每个skills的摘要信息名称 + 描述 + 路径）拼接成一段文本注入到System Prompt这样LLM知道skill的大致能力**
+
+##### 集成
+
+| 维度              | Advisor 模式                   |      Agent Hook + Interceptor 模式      |
+| ----------------- | ------------------------------ | :-------------------------------------: |
+| 主要场景          | `ChatClient`                   |              `ReactAgent`               |
+| 入口              | `BaseAdvisor.before()`         |     `SkillsAgentHook.beforeAgent()`     |
+| Skill 摘要注入    | Advisor 增强 System Message    | `SkillsInterceptor` 增强 System Message |
+| 自动重新加载      | Advisor 调用时处理             |       Hook 根据 `autoReload` 处理       |
+| `read_skill` 暴露 | 需要随 ChatClient 工具配置集成 |      Hook 的 `getTools()` 自动暴露      |
+| 动态专用工具      | 基础流程通常不负责             |   Interceptor 原生支持 `groupedTools`   |
+| 历史消息扫描      | 通常没有                       |     扫描历史 `read_skill` ToolCall      |
+| 适用复杂度        | 单次、轻量对话                 |        多轮 Agent、工具逐步解锁         |
+
+- **before()方法中完成技能列表的注入——reload 注册中心、获取技能列表、构建技能 prompt、增强系统消息。after()方法不做任何处理。这种方式适合直接用ChatClient 的场景**
+
+```
+@Override
+public ChatClientRequest before(ChatClientRequest chatClientRequest, AdvisorChain advisorChain) {
+    // 加载/重新加载 Skill 注册信息
+    loadSkillsToRegistry();
+    
+    List<SkillMetadata> skills = skillRegistry.listAll();
+    if (skills.isEmpty()) { return chatClientRequest; }
+
+    // 构建 Skill 提示词并追加到 System Message
+    String skillsPrompt = buildSkillsPrompt(skills, skillRegistry, skillRegistry.getSystemPromptTemplate());
+    SystemMessage systemMessage = chatClientRequest.prompt().getSystemMessage();
+    SystemMessage enhanced = enhanceSystemMessage(systemMessage, skillsPrompt);
+
+    return chatClientRequest.mutate()
+        .prompt(chatClientRequest.prompt().augmentSystemMessage(enhanced.getText()))
+        .build();
+}
+```
+
+**SkillsAgentHook是一个 `AgentHook`，标注@HookPositions(HookPosition.BEFORE_AGENT)`，在 Agent 执行前触发**
+
+- **如果开启了 autoReload，在 beforeAgent 中重新加载 Skill；**
+- **通过 getTools() 方法暴露 read_skill 工具给 Agent；**
+- **通过 getModelInterceptors() 自动创建并注册 SkillsInterceptor**
+
+**模型调用之前，SkillsInterceptor** 是一个模型拦截器
+
+- **在每次 LLM 调用前执行 interceptModel 方法。它先通过 buildSkillsPrompt 将 Skill 列表注入 System Message；**
+- **扫描对话 AssistantMessage调用过 read_skill 工具读取了某个 Skill，就从 groupedTools 中找到该 Skill 关联的专用工具，添加到 dynamicToolCallbacks 中**
+
+```
+@Override
+public ModelResponse interceptModel(ModelRequest request, ModelCallHandler handler) {
+    List<SkillMetadata> skills = skillRegistry.listAll();
+    if (skills.isEmpty()) { return handler.call(request); }
+
+    // 1. 扫描历史消息，提取 read_skill 调用的 skill_name
+    Set<String> readSkillNames = extractReadSkillNames(request.getMessages());
+
+    // 2. 根据 skill_name 注入关联的动态工具
+    List<ToolCallback> skillTools = new ArrayList<>(request.getDynamicToolCallbacks());
+    for (String skillName : readSkillNames) {
+        List<ToolCallback> toolsForSkill = getGroupedTools().get(skillName);
+        if (toolsForSkill != null)
+            skillTools.addAll(toolsForSkill);
+    }
+
+    // 3. 注入 Skill 列表到 System Prompt
+    String skillsPrompt = buildSkillsPrompt(skills, skillRegistry, skillRegistry.getSystemPromptTemplate());
+    SystemMessage enhanced = enhanceSystemMessage(request.getSystemMessage(), skillsPrompt);
+
+    // 4. 构建增强后的请求
+    return handler.call(ModelRequest.builder(request)
+        .systemMessage(enhanced)
+        .dynamicToolCallbacks(skillTools)
+        .build());
+}
+```
+
+**读取Skill**
+
+**ReadToolSkill被SpringAl封装成Toolcallback,SkillRegistry.readSkillContent(name) 读取对应 SKILL.md**
+
+**动态工具注入在第二次调用interceptModel方法**
+
+```
+sql-schema
+  -> get_database_schema
+  -> execute_readonly_sql
+
+web-research
+  -> web_search
+  -> fetch_page
+  
+  Assistant 是否调用过 read_skill("sql-schema")
+                │
+                ├─ 否：不注入数据库工具
+                │
+                └─ 是：把 sql-schema 对应工具加入 dynamicToolCallbacks
+```
 
 ### 渐进式披露
 
@@ -10329,6 +10445,8 @@ sequenceDiagram
 
 ### claudecode
 
+#### 安装
+
 [Node.js — 在任何地方运行 JavaScript](https://nodejs.org/zh-cn)
 
 ```
@@ -10338,9 +10456,147 @@ claude --version
 
 https://www.messci.com/
 
+#### command
+
+- **Skill 没有独立的数据类型，而是 `Command` 体系中的 `PromptCommand`**
+- **Skill ⊂ PromptCommand ⊂ Command**
+
+```
+Command
+├── 普通命令：/help、/clear
+├── PromptCommand：Skill
+├── WorkflowCommand
+└── PluginCommand
+```
+
+**多行并行加载，统一成command[],进入统一命令注册表。`Promise.all()` 降低启动延迟，memoize(cwd) 缓存避免同一目录重复扫描**
+
+#### 注册
+
+**根据上下文预算进行降级**
+
+```
+预算充足：名字 + 完整描述
+预算紧张：内置 Skill 完整，其他描述截断
+预算极低：内置 Skill 保留描述，其他只显示名字
+```
+
+#### 控制上下文
+
+**Skill 有两种触发入口：**
+
+- **用户通过 `/skill-name args` 显式调用**
+- **模型通过 `SkillTool` 主动调用**
+
+```
+模型或用户选择 Skill
+  → 找到对应的 PromptCommand
+  → 完成调用验证与权限检查
+  → 读取 command.context
+      ├─ 未设置或 inline：展开 Prompt，放入主对话执行
+      └─ fork：启动独立子 Agent，在其上下文中运行 Skill
+                    → 将最终结果返回主对话
+```
 
 
 
+```mermaid
+flowchart TD
+    Start["Claude Code 启动或进入工作目录"] --> Load["loadAllCommands(cwd)"]
+
+    subgraph Discovery["Skill 与 Command 并行发现"]
+        direction LR
+        Bundled["Bundled Skills<br/>编译进程序"]
+        BuiltinPlugin["Builtin Plugin Skills"]
+        SkillDirs["Skill 目录扫描<br/>用户 / 项目 / 组织"]
+        PluginSkills["外部 Plugin Skills"]
+        MCP["MCP Prompt Resources"]
+        Workflows["Workflow Commands"]
+        Hardcoded["硬编码命令<br/>help / clear 等"]
+    end
+
+    Load --> Bundled
+    Load --> BuiltinPlugin
+    Load --> SkillDirs
+    Load --> PluginSkills
+    Load --> MCP
+    Load --> Workflows
+    Load --> Hardcoded
+
+    SkillDirs --> Parse["读取 SKILL.md<br/>解析 Frontmatter"]
+    PluginSkills --> ParsePlugin["扫描 skillsPath<br/>添加插件命名空间"]
+    MCP --> Bridge["MCP Registry Bridge"]
+
+    Bundled --> Normalize["统一为 Command"]
+    BuiltinPlugin --> Normalize
+    Parse --> Normalize
+    ParsePlugin --> Normalize
+    Bridge --> Normalize
+    Workflows --> Normalize
+    Hardcoded --> Normalize
+
+    Normalize --> Registry["合并、去重、排序<br/>按 cwd 缓存"]
+    Registry --> Listing["生成可用 Skill 列表"]
+    Listing --> Budget{"上下文预算"}
+
+    Budget -->|"充足"| Full["名字 + 完整描述"]
+    Budget -->|"紧张"| Truncated["内置描述完整<br/>其他描述截断"]
+    Budget -->|"极低"| Names["内置描述保留<br/>其他只显示名字"]
+
+    Full --> Delta["仅发送 Agent 尚未见过的 Skill"]
+    Truncated --> Delta
+    Names --> Delta
+    Delta --> Model["模型获得 Skill 能力目录"]
+
+    Registry --> Slash["用户输入 /skill args<br/>解析 Slash Command"]
+    Model --> Tool["模型调用 SkillTool"]
+
+    Slash --> Find["查找 PromptCommand"]
+    Tool --> Validate["验证存在、类型及可调用性"]
+    Find --> Permission["权限检查"]
+    Validate --> Permission
+
+    Permission -->|"拒绝"| Reject["返回错误或拒绝执行"]
+    Permission -->|"允许"| Expand["getPromptForCommand<br/>展开 Skill 内容"]
+
+    Expand --> Mode{"执行方式"}
+    Mode -->|"Inline"| Inline["作为 UserMessage<br/>注入主对话"]
+    Mode -->|"Fork"| Fork["创建隔离子 Agent<br/>独立历史与 Token 预算"]
+    Mode -->|"Remote 加载"| Remote["从远程存储加载内容<br/>随后按 Inline 注入"]
+
+    Inline --> Execute["模型使用工具执行任务"]
+    Remote --> Execute
+    Fork --> ChildExecute["子 Agent 执行工具和推理"]
+
+    Execute --> MainResult["结果留在主对话"]
+    ChildExecute --> CompactResult["仅将最终结果返回主对话"]
+```
+
+```
+加载时：多源并行 + 缓存
+    ↓
+注册时：只暴露 Skill 名称和有限描述
+    ↓
+选择时：由模型根据描述按需调用
+    ↓
+执行时：完整 Prompt 延迟加载
+    ↓
+复杂任务：Fork 到独立上下文
+    ↓
+主对话：只保留必要信息或最终结果
+```
+
+### Harness自进化
+
+
+
+
+
+
+
+
+
+![mermaid-diagram.webp](https://img.f3f3.top/picgo/1789799367987_mermaid-diagram.webp)
 
 ## AgentScope
 

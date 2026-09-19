@@ -9919,6 +9919,241 @@ Use this skill when the user needs to work with PDF files...
 - MCP 关注的是 **Agent 如何连接外部世界、外部工具**，它定义的是工具如何被暴露给大模型使用；
 - Script 关注的是**在某一个具体 Skill内，哪些步骤必须用确定性代码来完成**
 
+### 接入skill
+
+#### 前置
+
+**引入SpringAlibaba的依赖**
+
+```
+<dependency>
+    <groupId>com.alibaba.cloud.ai</groupId>
+    <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+    <version>1.1.2.0</version>
+</dependency>
+
+<dependency>
+    <groupId>com.alibaba.cloud.ai</groupId>
+    <artifactId>spring-ai-alibaba-agent-framework</artifactId>
+    <version>1.1.2.0</version>
+</dependency>
+```
+
+**文件读取的依赖**
+
+```
+<dependency>
+    <groupId>org.apache.pdfbox</groupId>
+    <artifactId>pdfbox</artifactId>
+    <version>3.0.3</version>
+</dependency>
+
+<dependency>
+    <groupId>org.apache.poi</groupId>
+    <artifactId>poi-ooxml</artifactId>
+    <version>5.3.0</version>
+</dependency>
+
+<dependency>
+    <groupId>org.apache.poi</groupId>
+    <artifactId>poi-scratchpad</artifactId>
+    <version>5.3.0</version>
+</dependency>
+```
+
+#### 加载skill
+
+```
+src/main/resources/skills/
+└── resume-check/
+    ├── SKILL.md
+    └── jd.md
+```
+
+```
+SkillRegistry skillRegistry = ClasspathSkillRegistry.builder()
+        .classpathPath("skills")
+        .build();
+```
+
+#### 读取文件
+
+**Skil.md文件需要定义read_file这个字段**
+
+```
+read_file(path, startPage, endPage)
+绝对路径  classpath: 路径   http(s):// 网络地址
+根据扩展名找到对应的解析器，最终返回字符串截断到最大字符数给大模型
+
+必须调用 read_file 读取以下文件：
+classpath:skills/resume-check/jd.md
+不得将该路径改写为相对路径，不得通过 Shell 搜索该文件。
+```
+
+#### React
+
+```
+模型读取 Skill 列表
+   ↓
+调用 read_skill
+   ↓
+获取完整 SKILL.md
+   ↓
+发现需要读取 JD 和简历
+   ↓
+调用 ShellTool 或 read_file
+   ↓
+获取 JD 内容和简历内容
+   ↓
+按照 SKILL.md 生成报告
+```
+
+- **SkillsAgentHook** 负责 Skill 发现和 Skill 内容读取；
+- **ShellToolAgentHook** 负责执行 Shell 命令，例如下载远程文件；
+- **FileReaderTool** 负责解析文件内容；
+- **MemorySaver** 负责保存 Agent 状态
+
+```
+@RestController
+@RequestMapping("/skill")
+public class SkillController {
+
+    @Autowired
+    private ChatModel dashScopeChatModel;
+
+    @RequestMapping("/resumeCheck")
+    public String resumeCheck(String message) throws GraphRunnerException {
+
+        // 1. 技能注册表：从 classpath:skills 加载
+        SkillRegistry registry = ClasspathSkillRegistry.builder()
+                .classpathPath("skills")
+                .build();
+
+        // 2. Skills Hook：注册 read_skill 工具并注入技能列表到系统提示
+        SkillsAgentHook skillsHook = SkillsAgentHook.builder()
+                .skillRegistry(registry)
+                .build();
+
+        // 3. Shell Hook：提供 Shell 命令执行，用于文件下载
+        ShellToolAgentHook shellHook = ShellToolAgentHook.builder()
+                //避免脚本执行超时，超时时间设置的长一点
+                .shellTool2(ShellTool2.builder("/tmp/skills/resume-check/").withCommandTimeout(300000).build())
+                .build();
+
+        // 4. 构建 Agent：同时挂载 Skills Hook、Shell Hook、 文件读取工具
+        ReactAgent agent = ReactAgent.builder()
+                .name("resume-agent")
+                .model(dashScopeChatModel)
+                .saver(new MemorySaver())
+                //文件读取工具
+                .tools(ToolCallbacks.from(new FileReaderTool())[0])
+                .hooks(List.of(skillsHook, shellHook))
+                .enableLogging(true)
+                .build();
+
+        RunnableConfig config = RunnableConfig.builder()
+                .threadId("10088") // threadId 指定会话 ID，暂时写死
+                .build();
+
+        AssistantMessage assistantMessage = agent.call(message, config);
+
+        return assistantMessage.getText();
+    }
+```
+
+#### ChatClient
+
+```
+用户请求
+   ↓
+SpringAiSkillAdvisor.before()
+   ↓
+将当前可用 Skill 列表追加到 System Prompt
+   ↓
+模型发现 resume-check Skill
+   ↓
+模型调用 read_skill
+   ↓
+读取完整 SKILL.md
+   ↓
+模型调用 read_file
+   ↓
+读取 JD 和简历
+   ↓
+生成最终评估报告
+
+ChatClient
+ ├── SpringAiSkillAdvisor
+ ├── read_skill
+ └── read_file
+ read_file 已经支持 HTTP URL
+```
+
+- **SpringAiSkillAdvisor 只负责把 Skill 列表告诉模型，并不一定直接把完整的 SKILL.md 内容放入上下文**
+- **read_skill让模型主动某个 Skill 的完整内容相当于ShellToolAgentHook**
+
+```
+@RestController
+@RequestMapping("/skill")
+public class SkillController {
+
+    @Autowired
+    private ChatModel dashScopeChatModel;
+
+    @PostConstruct
+    public void init() {
+
+       /*
+          1. 创建 ClasspathSkillRegistry，从 classpath:skills/ 下加载 Skill
+         */
+        SkillRegistry skillRegistry = ClasspathSkillRegistry.builder()
+                .classpathPath("skills")
+                .build();
+
+        /*
+          2. 创建 read_skill 工具的 ToolCallback
+             这是 LLM 在推理时主动调用的工具，用于按需读取某个 Skill 的完整 SKILL.md 内容
+         */
+        ToolCallback readSkillToolCallback = ReadSkillTool.createReadSkillToolCallback(skillRegistry, null);
+
+        /*
+          3. 创建文件读取工具的 ToolCallback
+         */
+        ToolCallback[] fileReaderToolCallback = ToolCallbacks.from(FileReaderTool.class);
+
+        /*
+          4. 创建 SpringAiSkillAdvisor，把 SkillRegistry 注入进去
+             Advisor 会在每次对话的 before() 阶段将 Skill 列表追加到 System Prompt
+         */
+        SpringAiSkillAdvisor skillAdvisor = SpringAiSkillAdvisor.builder()
+                .skillRegistry(skillRegistry)
+                .build();
+        
+        /*
+          5. 创建 ChatClient，并注入 SkillAdvisor 和 read_skill 工具
+         */
+        this.chatClient = ChatClient.builder(chatModel)
+                .defaultAdvisors(skillAdvisor)
+                .defaultToolCallbacks(readSkillToolCallback, fileReaderToolCallback[0])
+                .build();
+
+    }
+
+
+    @RequestMapping("/resumeCheck")
+    public String resumeCheck(String message) throws GraphRunnerException {
+        return chatClient.prompt()
+                .user(message)
+                .call()
+                .content();
+    }
+}
+```
+
+#### **原理**
+
+
+
 ### 渐进式披露
 
 | 层级 | 组件名称    | 内容类型                              | 加载策略                      | Token 消耗权重         | 设计目的                                           |
@@ -9927,6 +10162,170 @@ Use this skill when the user needs to work with PDF files...
 | L2   | Instruction | `SKILL.md` 正文中的执行规则与操作流程 | On-Demand（命中后加载）       | 中等（约 5%～10%）     | 定义具体的业务处理逻辑、执行步骤与 SOP             |
 | L3   | Reference   | 外部文档、手册、规范、示例等补充资料  | Context-Triggered（条件触发） | 高（可变）             | 提供当前任务所需的领域知识，用完即弃               |
 | L4   | Script      | Python、Shell 等可执行脚本            | Execution-Only（仅执行）      | 近似为零（不读取代码） | 通过确定性代码完成复杂处理，并实现必要的外部副作用 |
+
+### Opencode
+
+#### 扫描
+
+**元数据在内存中表示**
+
+```
+{
+  name: "my-skill",
+  description: "...",
+  location: "/absolute/path/SKILL.md", //用于定位 Skill 目录
+  content: "..."  //真正激活后提供完整指令
+}
+```
+
+```
+找到所有 SKILL.md
+  ↓
+读取文件
+  ↓
+解析 frontmatter
+  ↓
+验证 name 和 description
+  ↓
+注册到内存
+```
+
+**重名后注册的对象会覆盖先注册的对象。项目和全局skill名字**
+
+#### 懒加载
+
+**skil初始化不是应用启动时立即执行，而是第一次调用 `state()` 时才执行**
+
+```
+export const state = Instance.state(async () => {
+  // 扫描和解析 Skill
+  return { skills, dirs }
+})
+```
+
+```
+if (已经初始化) {
+    return 缓存结果;
+}
+return 执行初始化并缓存;
+```
+
+#### 摘要
+
+**AgentRunTIme向SillRegistry查询可用skil,返回摘要和元数据**
+
+**系统提示中只注入摘要，不会注入skill.md**
+
+- **resume-check Skill发送给LLM适合简历评估任务**
+- **如果需要，可以调用 skill 工具加载它**
+- **但是没有skill.md文件，这时需要渐进式批露加载**
+- **启动时只暴露目录，任务匹配时加载正文**
+
+#### **SkilTool**
+
+- **返回结果为模型继续执行的指令相当于read_skill(模型自主判断)**
+- **从SkillRegistry询skill找不到列出可用skill**
+- **执行权限检查,查找附属文件**
+- **拼接完整的skill内容并添加到上下文交给LLM**
+  **请求AgentRuntime,执行skill.md中的classpath使用 read_file**
+- **返回JD文本和简历文本，根据Skill.md生成评估报告返回给AgentRuntime**
+
+**BaseDirectory** 
+
+```
+jd.md变成相对路径
+JD 文件位置：
+
+classpath:skills/resume-check/jd.md
+
+必须使用 read_file 工具读取该文件。
+```
+
+| OpenCode                |    Spring AI Alibaba     |
+| ----------------------- | :----------------------: |
+| `SkillTool`             |       `read_skill`       |
+| `ReadTool`              |    自定义 `read_file`    |
+| `SystemPrompt.skills()` |  `SpringAiSkillAdvisor`  |
+| `BashTool`              |   `ShellToolAgentHook`   |
+| Skill 注册表            | `ClasspathSkillRegistry` |
+
+**Tool Registry在统一的工具表汇总，不会执行ts函数**
+
+**Slash命令**
+
+```
+手动模式：
+用户输入 /resume-check
+  ↓
+系统直接找到对应 Skill
+  ↓
+将 Skill 正文作为 Prompt 模板注入
+```
+
+**仅输入skill的正文加载到系统提示词，附属文件需要普通工具读取**
+
+#### Runtime
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor U as 用户
+    participant A as Agent Runtime
+    participant L as LLM
+    participant R as SkillRegistry
+    participant S as SkillTool
+    participant F as read_file
+    participant C as Classpath
+    participant M as MinIO
+
+    A->>R: 查询当前可用的 Skills
+    R-->>A: 返回 resume-check 摘要<br/>name + description + location
+
+    Note over A,L: 系统提示只注入 Skill 摘要<br/>不会注入完整 SKILL.md
+
+    U->>A: 请分析这份简历<br/>http://localhost:9001/.../resume.pdf
+    A->>L: 发送系统提示和用户请求
+
+    L->>L: 根据 description 判断任务匹配<br/>resume-check
+
+    L->>A: 请求调用 skill("resume-check")
+    A->>S: 执行 SkillTool
+
+    S->>R: Skill.get("resume-check")
+    R-->>S: 返回 Skill 完整信息
+    S->>S: 检查 Skill 使用权限
+    S->>S: 扫描附属文件列表
+
+    S-->>A: 返回 SKILL.md 正文<br/>基准目录和附属文件清单
+    A->>L: 将 Skill 内容加入对话上下文
+
+    Note over L,S: Skill 只提供工作流程和规则<br/>实际文件读取仍需调用其他工具
+
+    L->>A: 请求调用 read_file<br/>classpath:skills/resume-check/jd.md
+    A->>F: 执行 read_file(JD路径)
+    F->>C: 打开 classpath 中的 jd.md
+    C-->>F: 返回 JD 文件流
+    F->>F: UTF-8 解析并截断
+    F-->>A: 返回 JD 文本
+    A->>L: 将 JD 文本加入上下文
+
+    L->>A: 请求调用 read_file<br/>简历 URL
+    A->>F: 执行 read_file(简历URL)
+    F->>M: HTTP GET 下载简历
+    M-->>F: 返回 PDF 文件流
+    F->>F: 识别 PDF 文件类型
+    F->>F: PDFBox 提取文本
+    F->>F: 按最大字符数截断
+    F-->>A: 返回简历文本
+    A->>L: 将简历文本加入上下文
+
+    Note over L: 当前上下文已经包含<br/>SKILL.md规则 + JD文本 + 简历文本
+
+    L->>L: 按 Skill 模板对照分析<br/>优势、风险、匹配度和面试问题
+    L-->>A: 返回完整简历评估报告
+    A-->>U: 输出最终报告
+```
 
 ### claudecode
 

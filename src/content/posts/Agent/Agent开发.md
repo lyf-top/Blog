@@ -10157,7 +10157,7 @@ public class SkillController {
 - **SkillScanner 遍历 Skill 根目录下的子目录skill.md**
 
 - **SkillMetadata 中可能已经保存了完整正文，并注册到内存Map里**
-- **在模型真正调用 read_skill`之前，正文不会被放进模型上下文**
+- **在模型真正调用 `read_skill` 之前，正文不会被放进模型上下文**
 - **SkillRegistry接口有两个实现类FileSystemSkillRegistry和ClasspathSkillRegistry**
 
 | 实现                      | 来源            | 特点                                                         |
@@ -10208,7 +10208,7 @@ public ChatClientRequest before(ChatClientRequest chatClientRequest, AdvisorChai
 }
 ```
 
-**SkillsAgentHook是一个 `AgentHook`，标注@HookPositions(HookPosition.BEFORE_AGENT)`，在 Agent 执行前触发**
+**SkillsAgentHook 是一个 `AgentHook`，标注 `@HookPositions(HookPosition.BEFORE_AGENT)`，在 Agent 执行前触发**
 
 - **如果开启了 autoReload，在 beforeAgent 中重新加载 Skill；**
 - **通过 getTools() 方法暴露 read_skill 工具给 Agent；**
@@ -10587,14 +10587,6 @@ flowchart TD
 ```
 
 ### Harness自进化
-
-
-
-
-
-
-
-
 
 ![mermaid-diagram.webp](https://img.f3f3.top/picgo/1789799367987_mermaid-diagram.webp)
 

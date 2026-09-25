@@ -10617,6 +10617,10 @@ flowchart TD
 </dependency>
 ```
 
+![image.webp](https://img.f3f3.top/picgo/1790335729832_image.webp)
+
+![image.webp](https://img.f3f3.top/picgo/1790335771492_image.webp)
+
 ### 调用Tool
 
 ```
@@ -10642,6 +10646,16 @@ Agent 生成最终回答
 ```
 
 ```
+
+// 工具类
+class SimpleTools {
+    @Tool(name = "get_time", description = "获取当前时间")
+    public String getTime(
+            @ToolParam(name = "zone", description = "时区，例如：北京") String zone) {
+        return java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
 public class AgentScopeHelloWorld {
 
     public static void main(String[] args) {
@@ -10670,14 +10684,6 @@ public class AgentScopeHelloWorld {
     }
 }
 
-// 工具类
-class SimpleTools {
-    @Tool(name = "get_time", description = "获取当前时间")
-    public String getTime(
-            @ToolParam(name = "zone", description = "时区，例如：北京") String zone) {
-        return java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-    }
 ```
 
 | API                  |                作用                |
@@ -10693,23 +10699,348 @@ class SimpleTools {
 
 ### 流式输出
 
+**Agent.stream(Msg, StreamOptions) — 流式调用入口，返回 Flux<Event>**
+
+**StreamOptions — 流式配置项（事件类型过滤、增量/累积模式等）**
+
+Event — 流式事件对象，包含类型、消息内容、是否为最后一条
+
+- **EventType — 事件类型枚举：ALL、REASONING、TOOL_RESULT、SUMMARY、AGENT_RESULT、HINT**
+- **REASONING**：ReactAgent 的"思考和规划"阶段产生的事件。模型决定下一步行动之前的推理输出。**(包含TOOL_USE工具入参）**
+- **TOOL_RESULT**：Agent 调用工具（Acting 阶段）执行完成后产生的事件，包含工具的返回结果。
+- SUMMARY：当 Agent 达到最大迭代次数（maxIters）仍未完成任务时，框架会强制进入总结阶段，让模型总结当前已完成的工作。这个阶段产生的事件就是 SUMMARY。
+- **AGENT_RESULT**：Agent 整个 call() 调用的最终返回结果相当于 agent.call(msg).block() 的返回值以事件形式
+- HINT：来自 RAG（检索增强生成）、Memory（记忆系统）或 Planning（规划系统）的上下文信息注入事件。这些信息不是模型生成的，而是框架在推理之前主动注入的辅助信息。
+- ALL：特殊值，表示接收所有类型的事件（**但默认仍不包含 AGENT_RESULT**）
+
+```
+@GetMapping(path = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> chat(
+            @RequestParam String message, HttpServletResponse httpServletResponse) {
+        httpServletResponse.setCharacterEncoding("UTF-8");
+
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new SimpleTools());
+
+        // 创建 Agent，注意 model 需要 stream(true)
+        ReActAgent agent = ReActAgent.builder()
+                .name("WebAgent").toolkit(toolkit)
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-plus")
+                        .stream(true)  // 开启模型级流式
+                        .build())
+                .build();
+
+        // 构建用户消息
+        Msg userMsg = Msg.builder().textContent(message).build();
+
+        // 配置流式选项 — 增量模式
+        StreamOptions streamOptions = StreamOptions.builder()
+                // 选择要接收的事件类型
+                .eventTypes(EventType.REASONING,
+                EventType.TOOL_RESULT)
+                // true = 增量模式（只发送新增内容），false = 累积模式（每次发送全部已累积内容）
+                .incremental(true)
+                // 是否包含最终推理结果（把流式输出的内容拼在一起一次性返回）
+                .includeReasoningResult(false)
+                .build();
+
+        // 调用 stream() 获取事件流
+        return agent.stream(userMsg, streamOptions)
+               //接受事件
+                .subscribeOn(Schedulers.boundedElastic())
+                //只输出textcontent不为空的结果
+                .map(event -> event.getMessage().getTextContent())
+                //json结果  .map方法为类型转换
+                .map(event -> JSON.toJSONString(event.getMessage()))
+                .filter(text -> text != null && !text.isEmpty());
+    }
+}
+```
+
 ### 结构化输出
 
+- **agent.stream(msgs, options, Class<T>) — 流式模式下的结构化输出**
+- ***msg.getStructuredData(Class<T>) — 从返回消息中提取结构化对象***
+
+```
+    //创建联系人信息实体类
+    public static class ContactInfo {
+        public String name;
+        public String email;
+        public String phone;
+        public String company;
+    }
+}
+
+@RestController
+@RequestMapping("/structured")
+public class StructuredOutputController {
+
+    private final String apiKey = "sk-e4902ea9d4164c1fa9d88ca86b2645c8";
+    @GetMapping("/chat")
+    public String chat() {
+        // 创建 Agent
+        ReActAgent agent = ReActAgent.builder().name("AnalysisAgent").sysPrompt("You are an intelligent analysis assistant. " + "Analyze user requests and provide structured responses.").model(DashScopeChatModel.builder().apiKey(apiKey).modelName("qwen-max").build()).build();
+
+        // 提取联系人信息
+        ContactInfo contactInfo = extractContactInfo(agent);
+        System.out.println("Name: " + contactInfo.name);
+        System.out.println("Email: " + contactInfo.email);
+        System.out.println("Phone: " + contactInfo.phone);
+        System.out.println("Company: " + contactInfo.company);
+        return JSON.toJSONString(contactInfo);
+    }
+
+    private static ContactInfo extractContactInfo(ReActAgent agent) {
+        Msg userMsg = Msg.builder().role(MsgRole.USER).content(TextBlock.builder().text("Extract contact info: Please contact Hollis at hollischuang@qq.com, " + "phone +1-555-1234, company SuperHollis.").build()).build();
+
+        Msg result = agent.call(userMsg, ContactInfo.class).block();
+        return result.getStructuredData(ContactInfo.class);
+    }
+```
+
+### 超时重试
+
+**定义一个ExecutionConfig控制模型和工具思考与重试传给Agent**
+
+```
+@GetMapping("/chat")
+    public String chat() {
+        //  给模型调用设置更短的超时和更多重试
+        ExecutionConfig modelConfig = ExecutionConfig.builder()
+                .timeout(Duration.ofSeconds(30))        // 单次请求超时30秒
+                .maxAttempts(5)                         // 最多尝试5次（1次初始 + 4次重试）
+                .initialBackoff(Duration.ofSeconds(1))  // 首次重试等1秒
+                .maxBackoff(Duration.ofSeconds(15))     // 退避上限15秒
+                .backoffMultiplier(2.0)                 // 指数退避：1s -> 2s -> 4s -> 8s -> 15s
+                .retryOn(ExecutionConfig.RETRYABLE_ERRORS)  // 使用默认可重试条件
+                .build();
+
+        // 给工具调用设置更长的超时（某些工具耗时较长）
+        ExecutionConfig toolConfig = ExecutionConfig.builder()
+                .timeout(Duration.ofMinutes(10))        // 工具执行最多等10分钟
+                .maxAttempts(2)                         // 最多重试1次
+                .initialBackoff(Duration.ofSeconds(3))
+                .retryOn(error -> error instanceof java.io.IOException) // 仅网络错误时重试
+                .build();
+
+        // === 构建 Agent，分别指定模型和工具的执行配置 ===
+        ReActAgent agent = ReActAgent.builder()
+                .name("RobustAgent")
+                .sysPrompt("You are a reliable assistant.")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-plus")
+                        .stream(true)
+                        .build())
+                .modelExecutionConfig(modelConfig)   // 模型调用的超时重试
+                .toolExecutionConfig(toolConfig)     // 工具调用的超时重试
+                .build();
+
+        Msg msg = Msg.builder()
+                .textContent("你是谁，现在几点了？")
+                .build();
+
+        return Objects.requireNonNull(agent.call(msg).block()).getTextContent();
+    }
+```
+
+### 执行控制
+
+#### 迭代次数
+
+**控制 ReAct 循环（Reasoning → Acting → Reasoning → ...）的最大轮次。达到上限后自动进入 Summary 阶段生成总结**
+
+```
+ReActAgent agent = ReActAgent.builder()
+        .name("BoundedAgent")
+        .sysPrompt("You are a helpful assistant.")
+        .model(model)
+        .maxIters(5)   // 最多5轮 Reasoning-Acting 循环，默认值为10
+        .build();
+```
+
+#### 安全中断
+
+**用户可以在任意时刻中断会话，保留上下文和未完成的工具调用**
+
+**中断源****
+
+- **USER — 用户主动中断（如点击"停止"按钮）**
+- **TOOL — 工具执行逻辑触发中断（如工具检测到需要人工确认）**
+- **SYSTEM — 系统触发（超时、资源限制、优雅关机等）**
+
+**定义Agent添加内存记忆和工具**
+
+```
+ReActAgent agent = ReActAgent.builder()
+                .name("DataAgent")
+                .sysPrompt("You are a data processing assistant. "
+                        + "Use the process_large_dataset tool to process datasets.")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey).modelName("qwen-max").stream(false).build())
+                .toolkit(toolkit)
+                .memory(new InMemoryMemory())
+                .maxIters(10)
+                .build();
+```
+
+**指定角色构造请求.role().content(TextBlock.builder()).build()**
+
+```
+// 用户请求
+        Msg userMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder()
+                        .text("Process the 'orders' dataset with 'aggregate' operation.")
+                        .build())
+                .build();
+```
+
+**单独线程启用Agent，中断后agent.interrupt(定义的中断消息类似UserMessage)**
+
+```
+// 在单独线程启动 Agent
+        Thread agentThread = new Thread(() -> {
+            Msg response = agent.call(userMsg).block();
+            System.out.println("[Agent] " + response.getTextContent());
+        });
+        agentThread.start();
+
+        // 等 2 秒后中断 Agent
+        Thread.sleep(2000);
+        System.out.println(">>> USER INTERRUPTS <<<");
+
+        // 携带中断消息（可选）
+        Msg interruptMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder()
+                        .text("Stop! I need to change parameters.")
+                        .build())
+                .build();
+        agent.interrupt(interruptMsg);
+
+        agentThread.join();
+        System.out.println("Memory size: " + agent.getMemory().getMessages().size());
+    }
+```
+
+#### 关机保留
+
+**适用于服务器部署场景（如 Spring Boot 应用收到kill -15）。系统会等待当前正在执行的 Agent 请求完成或达到超时后安全终止，并自动保存会话状态**
+
+```
+// 配置优雅关机策略
+GracefulShutdownConfig config = new GracefulShutdownConfig(
+        Duration.ofSeconds(30),            // 关机超时：最多等30秒
+        PartialReasoningPolicy.SAVE        // 未完成的推理结果：保存到Session
+        // 另一个选项: PartialReasoningPolicy.DISCARD 丢弃不完整结果
+);
+
+GracefulShutdownManager.getInstance().setConfig(config)
+```
+
+**关机时的安全检查点**
+
+- **PostReasoningEvent — 推理完成后**
+- **PostActingEvent — 工具执行完成后**
+- **PostSummaryEvent — 总结生成完成后**
+
+```
+@Configuration
+public class AgentShutdownConfig {
+
+    @Bean
+    public GracefulShutdownManager shutdownManager() {
+        GracefulShutdownManager manager = GracefulShutdownManager.getInstance();
+        manager.setConfig(new GracefulShutdownConfig(
+                Duration.ofSeconds(30),
+                PartialReasoningPolicy.SAVE
+        ));
+        return manager;
+    }
+
+    @PreDestroy
+    public void onShutdown() {
+        GracefulShutdownManager manager = GracefulShutdownManager.getInstance();
+        
+        // 触发优雅关机
+        manager.performGracefulShutdown();
+        
+        // 等待所有请求完成或超时
+        boolean terminated = manager.awaitTermination(Duration.ofSeconds(35));
+        if (terminated) {
+            System.out.println("All agent requests completed gracefully.");
+        } else {
+            System.out.println("Shutdown timed out, some requests were force-interrupted.");
+        }
+    }
+}
+```
+
+**通过实现 Hook 接口在 Agent 生命周期的各个阶段插入自定义逻辑，包括阻止工具执行、修改输入、记录日志**
+
+```
+public class ExecutionMonitorHook implements Hook {
+
+    @Override
+    public <T extends HookEvent> Mono<T> onEvent(T event) {
+        if (event instanceof PreCallEvent pre) {
+            System.out.println("[Monitor] Agent call started");
+
+        } else if (event instanceof PreActingEvent preAct) {
+            // 可以在这里拦截工具调用！
+            String toolName = preAct.getToolUse().getName();
+            System.out.println("[Monitor] About to call tool: " + toolName);
+            // 例如：拦截危险工具
+            // preAct.skipTool("Operation not permitted");
+
+        } else if (event instanceof PostActingEvent postAct) {
+            System.out.println("[Monitor] Tool completed: " + postAct.getToolUse().getName());
+
+        } else if (event instanceof PostCallEvent post) {
+            System.out.println("[Monitor] Agent call finished");
+
+        } else if (event instanceof ErrorEvent err) {
+            System.err.println("[Monitor] Error: " + err.getError().getMessage());
+        }
+
+        return Mono.just(event);
+    }
+
+    @Override
+    public int priority() {
+        return 100; // 数字越小优先级越高
+    }
+}
+
+// 注册到 Agent
+ReActAgent agent = ReActAgent.builder()
+        .name("MonitoredAgent")
+        .model(model)
+        .hooks(List.of(new ExecutionMonitorHook()))
+        .build();
+```
+
+### 多轮会话
 
 
 
 
 
+### 长期记忆
+
+
+
+### 上下文压缩
 
 
 
 
 
-
-
-
-
-
+## Agent2.0
 
 ## 微调
 
@@ -10717,9 +11048,11 @@ class SimpleTools {
 
 
 
+## Harness工程
 
 
 
+## Loop工程
 
 ## RAG评测
 

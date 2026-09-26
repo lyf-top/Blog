@@ -10763,6 +10763,7 @@ Event — 流式事件对象，包含类型、消息内容、是否为最后一�
 
 - **agent.stream(msgs, options, Class<T>) — 流式模式下的结构化输出**
 - ***msg.getStructuredData(Class<T>) — 从返回消息中提取结构化对象***
+- **通过 StructuredOutputHook + generate_response工具模式实现自动纠错—如果模型第一次没有按格式输出，框架会自动重试并引导模型调用指定工具**
 
 ```
     //创建联系人信息实体类
@@ -10778,7 +10779,7 @@ Event — 流式事件对象，包含类型、消息内容、是否为最后一�
 @RequestMapping("/structured")
 public class StructuredOutputController {
 
-    private final String apiKey = "sk-e4902ea9d4164c1fa9d88ca86b2645c8";
+    private final String apiKey = "";
     @GetMapping("/chat")
     public String chat() {
         // 创建 Agent
@@ -11026,17 +11027,465 @@ ReActAgent agent = ReActAgent.builder()
 
 ### 多轮会话
 
+#### Memory
+
+**Memory**（短期会话记忆）负责维护当前对话上下文**基于内存**
+
+- **将用户消息加入 Memory（addToMemory(msgs)）**
+- **构造完整消息列表传给 LLM（System Prompt + 历史消息 + 当前输入）**
+- **将 LLM 的回复也加入 Memory**
+- **如果触发工具调用，工具结果同样加入 Memory**
+- **循环直到 LLM 决定结束（无工具调用或达到 maxIters）**
+
+**持续累积历史消息，内存记忆InMemoryMemory，基于 CopyOnWriteArrayList 实现线程安全的消息存储**。
+
+```
+public interface Memory extends StateModule {
+    void addMessage(Msg message);     // 添加消息
+    List<Msg> getMessages();          // 获取全部历史消息
+    void deleteMessage(int index);    // 删除指定位置消息
+    void clear();                     // 清空所有消息
+}
+```
+
+**定义一个InMemoryMemory对象传到Agent里面**
+
+```
+public class MultiTurnChatDemo {
+
+    public static void main(String[] args) {
+        String apiKey = "";
+
+        // 创建 Memory（负责维护会话历史）
+        InMemoryMemory memory = new InMemoryMemory();
+        
+        // 创建 Agent
+        ReActAgent agent = ReActAgent.builder()
+                .name("Assistant")
+                .sysPrompt("You are a helpful AI assistant. Remember what the user tells you.")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-max")
+                        .build())
+                .memory(memory)   // 注入 Memory
+                .build();
+
+        // === 第1轮 ===
+        Msg msg1 = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("My name is Hollis and I'm a software engineer.").build())
+                .build();
+        Msg reply1 = agent.call(msg1).block();
+        System.out.println("Agent: " + reply1.getTextContent());
+
+        // === 第2轮（Agent 能记住第1轮信息）===
+        Msg msg2 = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("What's my name and what do I do?").build())
+                .build();
+        Msg reply2 = agent.call(msg2).block();
+        System.out.println("Agent: " + reply2.getTextContent());
+        // Agent 会回答: "Your name is Hollis and you're a software engineer."
+
+        // 查看 Memory 中的完整对话历史
+        System.out.println("Total messages in memory: " + memory.getMessages().size());
+        // 输出: 4（user1 + assistant1 + user2 + assistant2）
+    }
+}
+```
+
+#### Session
+
+**Session**（会话持久化）负责将状态保存/恢复到外部存储，**Session接口有很多存储的实现类**
+
+![image.webp](https://img.f3f3.top/picgo/1790386896696_image.webp)
+
+![image.webp](https://img.f3f3.top/picgo/1790386968862_image.webp)
+
+**创建InMemoryMemory对象引入到Agent**
+
+**Json持久化记忆首先创建Paths.get()存储json，创建Session的Json的实现类**
+
+- **agent.loadIfExists(session,sessionId)加载历史对话，发送新消息**
+- **agent.saveTo(session,sessionId)保存会话，下次可恢复对话**
+
+```
+public class PersistentChatDemo {
+
+    public static void main(String[] args) {
+        String apiKey = "";
+        String sessionId = "user_hollis_session";
+
+        // 1. 创建 Session（JSON文件持久化）
+        Path sessionPath = Paths.get(System.getProperty("user.home"),
+                ".agentscope", "examples", "sessions");
+        
+        //接口多态（编译左边运行右边）
+        Session session = new JsonSession(sessionPath);
+
+        // 2. 创建 Agent 组件
+        InMemoryMemory memory = new InMemoryMemory();
+
+        ReActAgent agent = ReActAgent.builder()
+                .name("Assistant")
+                .sysPrompt("You are a helpful AI assistant with persistent memory. ")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-max")
+                        .build())
+                .memory(memory)
+                .build();
+
+        // 3. 如果之前有保存的会话，加载它（恢复历史上下文）
+        boolean resumed = agent.loadIfExists(session, sessionId);
+        if (resumed) {
+            System.out.println("Session restored! " + memory.getMessages().size() + " messages loaded.");
+        } else {
+            System.out.println("New session started.");
+        }
+
+        // 4. 发送新消息（延续之前的对话上下文）
+        Msg userMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("My name is Hollis and I'm a software engineer.").build())
+                .build();
+
+        Msg response = agent.call(userMsg).block();
+        System.out.println("Agent: " + response.getTextContent());
+
+        // 5. 保存会话（下次启动时可恢复）
+        agent.saveTo(session, sessionId);
+        System.out.println("Session saved. Messages in memory: " + memory.getMessages().size());
+    }
+}
+
+```
+
+```
+~/.agentscope/sessions/       # 默认存储目录（可自定义）
+  └── user_hollis_session/    # 每个 SessionKey 一个子目录
+      ├── agent_meta.json     # Agent 元数据
+      ├── memory_messages.jsonl  # 消息列表（JSONL 格式，增量追加）
+      ├── memory_messages.hash # hash 文件（变更检测，避免不必要的全量重写）
+      └── toolkit_activeGroups.json  # Toolkit 状态
+```
+
+**精细控制**
+
+- **StatePersistence——精细控制持久化范围**
+- **默认情况下 Agent 的 saveTo/loadFrom 会自动管理所有组件。如果你想自己管理某些组件的状态，可以通过 StatePersistence 配置**
+
+```
+// 默认：管理所有组件
+ReActAgent agent1 = ReActAgent.builder()
+        .name("assistant")
+        .model(model)
+        .memory(memory)
+        .build(); // statePersistence 默认 = StatePersistence.all()
+
+// 只管理 Memory（Toolkit 和 PlanNotebook 由用户自行管理）
+ReActAgent agent2 = ReActAgent.builder()
+        .name("assistant")
+        .model(model)
+        .memory(memory)
+        .statePersistence(StatePersistence.memoryOnly())
+        .build();
+
+// 完全不管理（用户自行管理所有状态）
+ReActAgent agent3 = ReActAgent.builder()
+        .name("assistant")
+        .model(model)
+        .statePersistence(StatePersistence.none())
+        .build();
+
+// 自定义：管理 Memory 和 Toolkit，但不管理 PlanNotebook
+ReActAgent agent4 = ReActAgent.builder()
+        .name("assistant")
+        .model(model)
+        .memory(memory)
+        .statePersistence(StatePersistence.builder()
+                .memoryManaged(true)
+                .toolkitManaged(true)
+                .planNotebookManaged(false)
+                .statefulToolsManaged(false)
+                .build())
+        .build();
+```
+
+**StatePersistence中包含四个组件**
+
+- **Memory（对话记忆）所有消息列表（用户输入、LLM 回复、工具调用结果等**
+- **Toolkit（工具集）ToolKnit支持工具分组通过activeGroups控制工具激活状态**
+- **PlanNoteBook知道任务是否完成，继续未完成的计划**
+- **StatefulTools（有状态工具）Agent知道工具自身的内部状态**
+
+#### 区别
+
+**SpringAlibaba中状态 ≈ 消息列表**
+
+**Memory 的 addMessage()**
+
+- **同步写 → 严重拖慢 Agent 响应**
+- **异步写 → 中间状态不一致（Agent 还在推理中，你保存了半截状态）**
+- **批量缓冲写 → 在 Memory 里引入复杂的 buffer/flush 逻辑，职责不纯**
+
+**AgentScope中包含Memory 只管内存中的快速读写，Session 的保存时机完全由开发者决定**
+
+- **消息历史（Memory）**
+- **当前激活的工具组（Toolkit activeGroups）**
+- **多步计划的执行进度（PlanNotebook）**
+- **有状态工具的内部数据（StatefulTools）**
+- **Agent 元数据（sysPrompt 可能被动态修改）**
+
+**GracefulShutdown 自动保存**——agent.loadIfExists() 会自动绑定 Session 到 ShutdownManager，JVM 关闭时自动 saveTo
+
+### Hook
+
+#### 接口
+
+**Hook就是一个事件拦截器贯穿于推理，行动，总结，Hook是一个接口**
+
+- **priority决定事件优先级，return数字小代表事件先执行**
+- **OnEvent是事件的统一入口，<T extends HookEvent>传入什么事件返回什么类型，Hook可以修改事件内容但不能修改文件类型 ，返回Mono<T>支持异步操作**
+- **PreCallEvent  → Mono<PreCallEvent>**
+  **PostCallEvent → Mono<PostCallEvent>**
+
+```
+public interface Hook {
+    <T extends HookEvent> Mono<T> onEvent(T event);
+    default int priority() {
+    return 100; }
+}
+```
+
+**HookEvent是所有事件基类**
+
+```
+public abstract sealed class HookEvent  封闭类  
+        permits PreCallEvent, PostCallEvent, ReasoningEvent, ActingEvent, SummaryEvent, ErrorEvent {   只有这些类可以继承HookEvent
+
+    private final HookEventType type; //Hook需要执行操作的集合（枚举类，reason，action事件前后）
+    private final Agent agent;    
+    private final long timestamp;
+}
+```
+
+#### 切入点
+
+**HookEventType是所有事件的枚举**
+
+```
+public enum HookEventType {
+    PRE_CALL,       // Agent 开始处理前
+    POST_CALL,      // Agent 完成处理后
+    PRE_REASONING,  // LLM 推理前
+    POST_REASONING, // LLM 推理完成后
+    REASONING_CHUNK,// 推理流式输出中
+    PRE_ACTING,     // 工具执行前
+    POST_ACTING,    // 工具执行完成后
+    ACTING_CHUNK,   // 工具执行流式输出中
+    PRE_SUMMARY,    // 总结生成前（达到最大迭代次数时）
+    POST_SUMMARY,   // 总结生成完成后
+    SUMMARY_CHUNK,  // 总结流式输出中
+    ERROR           // 发生错误时
+}
+```
+
+| 事件类                | 时机                        | 可修改？ |                      关键 Setter / 能力                      |
+| --------------------- | --------------------------- | -------- | :----------------------------------------------------------: |
+| `PreCallEvent`        | `agent.call()` 开始         | Yes      | `setInputMessages` `setSystemMessage` `appendSystemContent`  |
+| `PostCallEvent`       | `agent.call()` 结束         | Yes      |                      `setFinalMessage`                       |
+| `PreReasoningEvent`   | 每轮推理前                  | Yes      | `setInputMessages` `setGenerateOptions` `appendSystemContent` |
+| `PostReasoningEvent`  | 推理完成                    | Yes      |  `setReasoningMessage` `stopAgent()` `gotoReasoning(msgs)`   |
+| `ReasoningChunkEvent` | 流式 Token 到达             | No       |          `getIncrementalChunk()` `getAccumulated()`          |
+| `PreActingEvent`      | 单个工具执行前              | Yes      |                  `setToolUse(ToolUseBlock)`                  |
+| `PostActingEvent`     | 单个工具执行后              | Yes      |                `setToolResult` `stopAgent()`                 |
+| `ActingChunkEvent`    | 工具流式输出                | No       |                         `getChunk()`                         |
+| `PreSummaryEvent`     | 超过 `maxIters`，进入总结前 | Yes      |           `setInputMessages` `setGenerateOptions`            |
+| `PostSummaryEvent`    | 总结完成                    | Yes      |                     `setSummaryMessage`                      |
+| `SummaryChunkEvent`   | 总结流式输出                | No       |          `getIncrementalChunk()` `getAccumulated()`          |
+| `ErrorEvent`          | 出错                        | No       |                         `getError()`                         |
 
 
 
+**PostReasoningEvent.stopAgent()** 
+
+- **调用后 Agent 立即返回当前消息，不执行工具。**
+- **实现 human-in-the-loop：用户可以审查 LLM 打算调什么工具，确认后再 agent.call() 继续。**
+
+**PostReasoningEvent.gotoReasoning(msgs)** 
+
+- **跳过 acting 阶段，直接回到下一轮 reasoning**
+- **StructuredOutputHook 发现 LLM 输出格式不对，构造一条 hint 消息塞进去要求重试。**
+- **内部有 ToolValidator.validateToolResultMatch 校验——如果原始推理里有 ToolUseBlock，你塞的 msgs 里必须包含对应的 ToolResult，否则抛异常**。
+
+**PostActingEvent.stopAgent()**  
+
+**类似 PostReasoning 的 stop，但触发在工具执行之后。适合"执行完了先让人看看结果再继续"的场景。**
+
+#### 管理Hook
+
+- **AgentBase是所有Agent的抽象基类，Hook的生命周期，CopyOnWriteArrayList 保存 Hook：**
+- **ReactAgent两者管理事件类型不同**
+
+```
+public abstract class AgentBase implements StateModule, Agent {
+
+    public AgentBase(String name, String description, boolean checkRunning, List<Hook> hooks) {
+        this.agentId = UUID.randomUUID().toString();
+        this.name = name;
+        this.description = description;
+        this.checkRunning = checkRunning;
+        this.hooks = new CopyOnWriteArrayList<>(hooks != null ? hooks : List.of());
+        this.hooks.addAll(systemHooks);
+        sortHooks();
+    }
+
+    //获取注册的Hook列表
+    protected List<Hook> getSortedHooks() {
+        return hooks;
+    }
+    // 动态添加 Hook
+    protected void addHook(Hook hook) { ... }
+    // 动态移除 Hook
+    protected void removeHook(Hook hook) { ... }
+    // 静态方法注册全局 Hook（对所有后续创建的 Agent 生效）
+    public static void addSystemHook(Hook hook) { ... }
+    public static void removeSystemHook(Hook hook) { ... }
+}
+```
+
+**AgentBase的作用**
+
+- **合并 Agent Hook 和系统 Hook。**
+- **按优先级排序。**
+- **动态添加或移除 Hook。**
+- **为调度过程提供排序后的 Hook 列表**
+
+ **this.hooks.addAll(systemHooks)系统 Hook 是在 Agent 创建时复制进实例列表的**
+
+**已经创建的 Agent 是否同步变化，需要看 `addSystemHook()` 的完整实现，不能仅凭当前片段断定。**
+
+#### Hook调度
+
+##### AgentBase
+
+**外层生命周期由 `AgentBase` 管理，ReAct 内部循环由 `ReActAgent` 管理**
+
+- **在AgentBase中，主要负责PreCall / PostCall / Error的调度**
+- **在ReActAgent中，主要负责 Reasoning / Acting / Summary的调度**
+
+    AgentBase.call()  //
+    	notifyPreCall(msgs) 
+            .flatMap(this::doCall)真正逻辑  ReActAgent 实现了 doCall()
+            .flatMap(this::notifyPostCall)
+            .onErrorResume(createErrorHandler(...))
+
+**前置利用getSortedHooks获取所有的Hook,并执行OnEvent方法，不会过滤事件，所有事件都会被执行**
+
+- **后一个 Hook 可以看到前一个 Hook 的修改。Hook 必须自行判断是否关心该事件**
+- **多个 Hook 修改同一字段时，后执行的 Hook 可能覆盖前面的结果。**
+- **任一 Hook 返回 `Mono.error()`，后续 Hook 和核心逻辑都不会继续执行**
+
+##### React
+
+**ReasoningChunkEvent中ReasoningContext**
+
+**PreReasoningEvent触发多次**
+
+-  **识别增量内容类型**
+- **从上下文构建累计内容**
+- **广播给所有 Hook遍历执行OnEvent方法**
+
+| 事件类型              | 调度模型 |                  原因                  |
+| --------------------- | -------- | :------------------------------------: |
+| Pre/Post 生命周期事件 | 串行管道 | 后一个 Hook 需要看到前一个 Hook 的修改 |
+| Chunk 流式事件        | 并发广播 |    事件只读，重点是降低流式通知延迟    |
+
+#### 集成
+
+```
+ReActAgent agent = ReActAgent.builder()
+        .name("Assistant")
+        .model(model)
+        .toolkit(toolkit)
+        .hooks(List.of(
+                new LoggingHook(),
+                new HighPriorityHook(),
+                new PromptEnhancingHook()
+        ))
+        .build();
+```
+
+#### 内置Hook
+
+![mermaid-diagram.webp](https://img.f3f3.top/picgo/1790432259366_mermaid-diagram.webp)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### 自定义
+
+- **实现hook接口重写onEvent方法**
+- **利用switch(传入的event)和case这俩个事件PreCallEvent和PostCallEvent并Lanmda内容yield Mono.just(event);**
+-  **默认实现default -> Mono.just(event);**
+
+```
+public class LoggingHook implements Hook {
+
+    @Override
+    public <T extends HookEvent> Mono<T> onEvent(T event) {
+        return switch (event) {
+            case PreCallEvent e -> {
+                System.out.println(
+                        "[Hook] Agent "
+                                + e.getAgent().getName()
+                                + " starting...");
+                yield Mono.just(event);
+            }
+
+            case PostCallEvent e -> {
+                System.out.println(
+                        "[Hook] Agent "
+                                + e.getAgent().getName()
+                                + " finished.");
+                yield Mono.just(event);
+            }
+
+            default -> Mono.just(event);
+        };
+    }
+}
+```
+
+### 上下文压缩
 
 ### 长期记忆
 
 
 
-### 上下文压缩
+### 记忆体系
 
+### 工具集成
 
+### MCP接入
+
+### RAG
+
+### 人工确认
+
+### 计划执行
 
 
 

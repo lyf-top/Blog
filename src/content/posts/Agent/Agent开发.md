@@ -10761,6 +10761,8 @@ Event — 流式事件对象，包含类型、消息内容、是否为最后一�
 
 ### 结构化输出
 
+**agent.call(Msg, Class<T>) — 指定输出类型，返回包含结构化数据的 Msg**
+
 - **agent.stream(msgs, options, Class<T>) — 流式模式下的结构化输出**
 - ***msg.getStructuredData(Class<T>) — 从返回消息中提取结构化对象***
 - **通过 StructuredOutputHook + generate_response工具模式实现自动纠错—如果模型第一次没有按格式输出，框架会自动重试并引导模型调用指定工具**
@@ -11239,6 +11241,203 @@ ReActAgent agent4 = ReActAgent.builder()
 
 **GracefulShutdown 自动保存**——agent.loadIfExists() 会自动绑定 Session 到 ShutdownManager，JVM 关闭时自动 saveTo
 
+### 长期记忆
+
+#### 接口
+
+**SpringAlibaba支持接入Memo0，AgentScope提供了长期记忆的接口**
+
+```
+public interface LongTermMemory {
+    Mono<Void> record(List<Msg> msgs);   // 记录：从消息中提取知识并存储
+    Mono<String> retrieve(Msg msg);       // 检索：根据查询语义返回相关记忆文本
+}
+```
+
+- **有三个实现类BailianLongTermMemory、Mem0LongTermMemory和ReMeLongTermMemory。**
+- **指定userId实现用户隔离，短期记忆使用ChatId**
+
+```
+BailianLongTermMemory.builder()
+    .apiKey(System.getenv("DASHSCOPE_API_KEY"))   // 阿里云 DashScope Key
+    .userId("user_001")       // 必填
+    .memoryLibraryId("lib_xxx")     // 记忆库 ID
+    .projectId("proj_xxx")        // 项目 ID
+    .profileSchema("schema_xxx")    // 用户画像 schema
+    .topK(10)
+    .minScore(0.5)       // 提高阈值，只要高相关结果
+    .enableRerank(true)       // 启用重排序
+    .enableJudge(true)       // 启用 LLM 判断
+    .enableRewrite(true)       // 启用查询改写
+    .metadata(Map.of("source", "mobile-app"))
+    .build();
+```
+
+```
+Mem0LongTermMemory.builder()
+   .agentName("Assistant")     // 内部映射为 agentId（可选）
+    .userId("user_123")       // 用户隔离（核心维度）
+    .runId("session_456")      // 单次会话隔离（可选）
+    .apiBaseUrl("https://api.mem0.ai") // PLATFORM默认地址
+    .apiKey(System.getenv("MEM0_API_KEY"))  // 平台模式必填
+    .apiType(Mem0ApiType.PLATFORM) // 或 SELF_HOSTED
+    .metadata(Map.of("category", "travel", "lang", "zh"))
+    .build();
+```
+
+```
+eMeLongTermMemory.builder()
+    .userId("task_workspace")   // 必填，映射为 workspaceId
+    .apiBaseUrl("http://localhost:8002")// ReMe服务地址
+    .timeout(Duration.ofSeconds(120))   // 可选，HTTP 超时
+    .build();
+```
+
+#### 记忆模式
+
+**LongTermMemoryMode解决了何时需要记忆，谁来记忆**
+
+```
+public enum LongTermMemoryMode {
+    AGENT_CONTROL,    // Agent 自己决定何时记录/检索（注册为工具）
+    STATIC_CONTROL,   // 框架自动管理（每轮自动检索+记录）
+    BOTH              // 两者结合（推荐）
+}
+```
+
+**AgentControl模式**
+
+**由 LongTermMemoryTools 实现，框架向 Toolkit 注册两个工具**
+
+**Agent 通过 Function Calling 决定何时记忆/回忆**
+
+- **recordToMemory(thinking, content) — Agent 主动调用记录关键信息**
+- **retrieveFromMemory(keywords) — Agent 主动按关键词检索**
+
+**STATICCONTROL 模式**
+
+**由StaticLongTermMemoryHook 实现**
+
+- **PreCallEvent**（推理前）：取出最后一条用户消息 → 调用 retrieve() → 用 <long_term_memory>...</long_term_memory> 标签包装结果 → 作为 USER role 消息（name="long_term_memory"）追加到输入消息末尾
+- **PostCallEvent**（回复后）：把 Memory 中所有消息传给 record() → 由后端（如 Mem0）自动提取关键信息并向量化存储
+
+**异步记录：可选 asyncRecord=true，使用专用的 boundedElastic scheduler（1 worker，队列 3），避免阻塞响应。**
+
+```
+public class BailianLongTermMemoryDemo {
+    public static void main(String[] args) {
+        // 1. 配置 bailian 长期记忆
+        BailianLongTermMemory longTermMemory = BailianLongTermMemory.builder()
+                .userId("hollis666")           // 关键：每个用户一个隔离的记忆空间
+                .apiKey("")
+                .memoryLibraryId("")
+                .build();
+
+        // 2. 创建 Agent，启用 STATIC_CONTROL 模式
+        ReActAgent agent = ReActAgent.builder()
+                .name("Assistant")
+                .model(DashScopeChatModel.builder()
+                        .apiKey("")
+                        .modelName("qwen-plus")
+                        .build())
+                .longTermMemory(longTermMemory)
+                .longTermMemoryMode(LongTermMemoryMode.STATIC_CONTROL)
+                .build();
+
+        // 3. 模拟首次对话：告诉 Agent 一些用户偏好
+        Msg userMsg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("我是Hollis，我不喜欢吃香菜，我爱吃辣的").build())
+                .build();
+
+        Msg reply1 = agent.call(userMsg).block();
+        System.out.println("Agent: " + reply1.getTextContent());
+
+        // ===模拟 JVM 重启后的情况——>新建 Agent 实例（短期记忆全空）===
+        // 但只要 userId 一致，长期记忆中的偏好仍可被检索到
+
+        BailianLongTermMemory longTermMemory2 = BailianLongTermMemory.builder()
+                .userId("hollis666")           // 同样的 userId
+                .apiKey("sk-dcebc45c03b04c6e85391abb2264e594")
+                .memoryLibraryId("8553b56bbeb9451295e49a09d8c26ee3")
+                .build();
+
+        ReActAgent agent2 = ReActAgent.builder()
+                .name("Assistant")
+                .model(DashScopeChatModel.builder()
+                        .apiKey("sk-dcebc45c03b04c6e85391abb2264e594")
+                        .modelName("qwen-plus")
+                        .build())
+                .longTermMemory(longTermMemory2)
+                .longTermMemoryMode(LongTermMemoryMode.STATIC_CONTROL)
+                .build();
+
+        // 提问 - Agent 会自动检索到之前的过敏信息
+
+        Msg userMsg1 = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("我来杭州了，请帮我推荐几个餐馆吧").build())
+                .build();
+        Msg reply3 = agent2.call(userMsg1).block();
+        System.out.println("Agent: " + reply3.getTextContent());
+    }
+}
+```
+
+#### 自定义
+
+**重写record和retrieve方法**
+
+```
+public class CustomLongTermMemory implements LongTermMemory {
+
+    private final VectorStore vectorStore;       // 你的向量库（如 Milvus/PGVector）
+    private final EmbeddingModel embedder;       // 嵌入模型
+    private final ChatModel summarizer;          // 用于知识抽取的 LLM
+    private final String userId;
+
+    @Override
+    public Mono<Void> record(List<Msg> msgs) {
+        // 1. 用 LLM 从消息中抽取关键事实
+        return summarizer.extract(msgs, "Extract user preferences, facts, and decisions.")
+                // 2. 向量化
+                .flatMap(facts -> embedder.embed(facts))
+                // 3. 存入向量库（带 userId 标签）
+                .flatMap(vector -> vectorStore.save(userId, vector));
+    }
+
+    @Override
+    public Mono<String> retrieve(Msg query) {
+        // 1. 查询向量化
+        return embedder.embed(query.getTextContent())
+                // 2. 向量检索 Top-K（带 userId 过滤）
+                .flatMap(qvec -> vectorStore.search(userId, qvec, 5))
+                // 3. 拼接为文本返回
+                .map(results -> String.join("\n", results));
+    }
+}
+```
+
+### 上下文压缩
+
+**用来解决多轮对话token爆炸，上下文溢出**
+
+AutoContextMemory
+
+
+
+
+
+
+
+
+
+
+
+### 记忆体系
+
+
+
 ### Hook
 
 #### 接口
@@ -11375,27 +11574,41 @@ public abstract class AgentBase implements StateModule, Agent {
 - **在AgentBase中，主要负责PreCall / PostCall / Error的调度**
 - **在ReActAgent中，主要负责 Reasoning / Acting / Summary的调度**
 
-    AgentBase.call()  //
-    	notifyPreCall(msgs) 
-            .flatMap(this::doCall)真正逻辑  ReActAgent 实现了 doCall()
-            .flatMap(this::notifyPostCall)
-            .onErrorResume(createErrorHandler(...))
+```
+AgentBase.call()  //
+	notifyPreCall(msgs) 
+        .flatMap(this::doCall)真正逻辑  ReActAgent 实现了 doCall()
+        .flatMap(this::notifyPostCall)
+        .onErrorResume(createErrorHandler(...))
+```
 
-**前置利用getSortedHooks获取所有的Hook,并执行OnEvent方法，不会过滤事件，所有事件都会被执行**
+```
+for (Hook hook : getSortedHooks()) {
+    result = result.flatMap(hook::onEvent);
+}
+```
 
-- **后一个 Hook 可以看到前一个 Hook 的修改。Hook 必须自行判断是否关心该事件**
+**前置利用getSortedHooks获取所有的Hook,并执行OnEvent方法，不会过滤事件，Hook 必须自行判断是否关心该事件，所有事件都会被执行**
+
+- **后一个 Hook 可以看到前一个 Hook 的修改。**
 - **多个 Hook 修改同一字段时，后执行的 Hook 可能覆盖前面的结果。**
 - **任一 Hook 返回 `Mono.error()`，后续 Hook 和核心逻辑都不会继续执行**
 
 ##### React
 
-**ReasoningChunkEvent中ReasoningContext**
-
-**PreReasoningEvent触发多次**
+**ReasoningChunkEvent的构造流程**
 
 -  **识别增量内容类型**
 - **从上下文构建累计内容**
 - **广播给所有 Hook遍历执行OnEvent方法**
+
+```
+return Flux.fromIterable(getSortedHooks())
+        .flatMap(hook -> hook.onEvent(event))
+        .then();
+```
+
+**`Flux.flatMap()` 允许 Hook 异步并发执行**
 
 | 事件类型              | 调度模型 |                  原因                  |
 | --------------------- | -------- | :------------------------------------: |
@@ -11417,23 +11630,34 @@ ReActAgent agent = ReActAgent.builder()
         .build();
 ```
 
-#### 内置Hook
+#### Streaming
+
+**内置hook**
 
 ![mermaid-diagram.webp](https://img.f3f3.top/picgo/1790432259366_mermaid-diagram.webp)
 
+- **监听 Reasoning、Acting 和 Summary 的 Post/Chunk 事件，将内部事件推送到 FluxSink**
+- **具有短暂的生命周期**
+- **agent.stream()开始，自动触发流式事件,转发事件，调用结束，移除事件**
+
+#### Structured
+
+![example.webp](https://img.f3f3.top/picgo/1790510144493_example.webp)
 
 
 
 
 
+#### Skill
 
+**在 PreReasoningEvent阶段将技能目录注入系统提示词。这样每轮推理都可以获得当前技能信息**
 
+#### 长期记忆
 
-
-
-
-
-
+```
+PreCallEvent：检索相关长期记忆并注入
+PostCallEvent：异步保存本轮对话
+```
 
 #### 自定义
 
@@ -11469,23 +11693,25 @@ public class LoggingHook implements Hook {
 }
 ```
 
-### 上下文压缩
-
-### 长期记忆
-
-
-
-### 记忆体系
-
 ### 工具集成
+
+
 
 ### MCP接入
 
+
+
 ### RAG
+
+
 
 ### 人工确认
 
+
+
 ### 计划执行
+
+
 
 
 
@@ -11501,73 +11727,15 @@ public class LoggingHook implements Hook {
 
 
 
+
+
 ## Loop工程
+
+
 
 ## RAG评测
 
+
+
 ## Agent评测
 
-## 多agent
-
-### 分层结构
-
-```
-Controller Agent（大脑）
-   ↓
-Task Agent（拆任务）
-   ↓
-Executor Agent（执行）
-```
-
-###  协作模式
-
-- 父子（调度）
-
-- 平行（协同）
-
-- 竞争（投票）
-
-### 核心难点
-
-####  状态管理
-
-保存什么？”是灵魂问题
-
-业界主流：
-
-- 当前任务状态
-- 中间结果
-- 工具调用记录
-- LLM推理结果（可选）
-
-#### 快照 & 恢复
-
-场景：
-
-- 任务中断
-- Agent崩溃
-- 超时
-
-#### 记忆系统
-
-##### 纵向演进
-
-- 存储：**上下文窗口 → RAG / 向量库 → 分层 / 图谱 / 层级 → 三维统一架构**。
-- 能力：**被动记录 → 检索 → 抽象 / 反思 → 自我演化 / 持续学习**。
-- 范式：**静态 LLM → 带记忆 Agent → 自适应 / 成长型智能体**。
-
-分三层：
-
-- 短期记忆（上下文）
-
-- 长期记忆（向量库）
-
-- 用户画像（偏好)
-
-### 安全机制
-
-“三层防护”：
-
-1. 权限控制
-1. 操作确认（Human-in-the-loop）
-1. 沙箱执行（隔离环境）

@@ -11420,23 +11420,274 @@ public class CustomLongTermMemory implements LongTermMemory {
 
 ### 上下文压缩
 
+#### 初识
+
 **用来解决多轮对话token爆炸，上下文溢出**
 
-AutoContextMemory
+**AutoContextMemory实现了Memory接口把原始内容卸载到外部存储（可通过 ID 重新加载）**
 
+**触发压缩的条件**
 
+```
+// 消息数量超过 msgThreshold，默认 100 条
+boolean msgCountReached  = messages.size() >= msgThreshold;       
+// Token 数量超过 模型最大上下文 × tokenRatio ，默认 128k * 0.75 = 96k
+boolean tokenCountReached = tokens >= maxToken * tokenRatio; 
+```
 
+利用模型回答前判断是否满足压缩条件
 
+```
+Agent 准备调用模型
+        │
+        ▼
+PreReasoningHook
+        │
+        ▼
+AutoContextMemory.compressIfNeeded()
+        │
+        ├─ 消息数是否 >= 100？
+        ├─ Token 是否 >= 模型窗口 × 0.75？
+        │
+        └─ 任一满足，进入压缩
+                │
+                ▼
+        依次尝试策略 1 → 6
+                ├─ 某个策略成功
+                │      ├─ 更新 working memory
+                │      ├─ 原文写入 offloadContext
+                │      ├─ 记录压缩事件和 token 用量
+                │      └─ 立即停止，不再执行后续策略
+                │
+                └─ 全部失败
+                       └─ 保持当前上下文
+```
 
+#### **六大策略**
 
+- **压缩历史工具链，保留最终回答**
 
+```
+处理的是已经被Agent消费的工具消息
+assistant: tool_use(search, query=...)
+tool:      大量搜索结果
+原消息保存到 offloadContext，通过LLM生成摘要将n条消息转换为一条摘要
+ 
+ if (!messageThresholdReached && !tokenThresholdReached) {
+    return false;
+}
+if (compressPreviousToolMessages()) return true;
+```
 
+- **卸载大消息**
 
+```
+不是语义压缩而是存储层面的搬运
 
+原始大消息 1.完整内容 → offloadContext[uuid]
+2.working memory 中替换为：前 200 字预览<context_offload uuid="..."/>
+
+if (offloadLargePayloadWithRecentProtection()) return true;
+if (offloadLargePayloadWithoutRecentProtection()) return true;
+```
+
+- **压缩历史轮次，压缩最终结果**
+
+```
+//压缩前
+user: 用户问题
+assistant: 工具调用
+tool: 工具结果
+assistant: 最终回答
+//压缩后
+user: 用户问题
+assistant: 自包含的事实性摘要 + offload UUID
+将工具结果转化为已知事实
+
+if (summarizePreviousRounds()) return true;
+```
+
+- **当前轮最大消息**
+
+```
+定位最近一条 user 消息
+        ↓
+倒序扫描其后的消息
+        ↓
+跳过已经压缩过的消息
+        ↓
+找到超过 5KB 的消息
+        ↓
+卸载原文
+        ↓
+LLM 保守摘要
+        ↓
+按原类型重建消息结构
+
+if (summarizeCurrentRoundLargeMessages()) return true;
+```
+
+- **当前轮整体压缩**
+
+***给出约 30% 的明确目标，保留旧摘要，增加新的工具调用***
+
+```
+当前轮全部消息
+        ↓
+计算总字符数 X
+        ↓
+目标字符数 Y = X × 0.3
+        ↓
+卸载原始当前轮
+        ↓
+LLM 按目标长度整合工具交互
+        ↓
+生成新的压缩上下文
+        ↓
+追加新的 offload UUID
+
+if (summarizeCurrentRound()) return true;
+```
+
+**触发检测**
+
+-  **判断 token 来自哪里**
+
+-  **优先压缩历史工具过程**
+-  **再卸载历史大消息**
+-  **再摘要历史轮次**
+-  **必要时压缩当前轮**
+-   **保存原文并留下 UUID**
+-   **未来按需重新加载**
+
+#### **卸载恢复**
+
+```
+原始消息
+    │
+    ▼
+offload(uuid, messages)
+    │
+    ├─ offloadContext[uuid] = 原始消息列表
+    │
+    └─ working memory = 摘要/预览 + UUID 标签
+                               │
+                               ▼
+                    Agent 需要更多细节
+                               │
+                               ▼
+                 context_offload(uuid)
+                               │
+                               ▼
+                     memory.reload(uuid)
+                               │
+                               ▼
+                        返回原始消息
+```
+
+- **working memory 类似高速内存，只保留当前推理需要的内容；**
+- **offloadContext 类似低速后备存储，保留完整原文；**
+- **UUID 类似页地址；**
+- **`context_offload` 工具负责按需换入。**
 
 ### 记忆体系
 
+- **AutoContextMemory其实是Memory的实现类可以引入Agent**
+- **定义一个AutoContextConfig参数最近消息条数短期记忆并自带压缩**
+- **通过.memory（AutoContextMemory对象（config,Model用于生成摘要））**
+- **AutoContextMemory中的compressIfNeeded是需要通过一个Hook来调用执行,LLM每次推理前**
 
+```
+public static void main(String[] args) {
+       //指定上下文压缩中生成摘要的模型
+        DashScopeChatModel chatModel = DashScopeChatModel.builder()
+                .apiKey("sk-dcebc45c03b04c6e85391abb2264e594")
+                .modelName("qwen3-max")
+                .stream(true)
+                .enableThinking(true)
+                .formatter(new DashScopeChatFormatter())
+                .defaultOptions(GenerateOptions.builder().thinkingBudget(1024).build())
+                .build();
+
+        // 1. 长期记忆：跨会话语义检索
+        BailianLongTermMemory longTermMemory = BailianLongTermMemory.builder()
+                .userId("hollis666")           // 关键：每个用户一个隔离的记忆空间
+                .apiKey("")
+                .memoryLibraryId("")
+                .build();
+
+        // 2. 短期记忆：AutoContextMemory（自动上下文压缩）
+        // 当短期消息超过 token 上限时，自动总结早期消息以节省 token
+        AutoContextConfig autoContextConfig = AutoContextConfig.builder()
+                .tokenRatio(0.1)        // 触发压缩的阈值比例
+                .lastKeep(20)            // 最近保留的消息数
+                .build();
+        AutoContextMemory memory = new AutoContextMemory(autoContextConfig, chatModel);
+
+        // 3. 工具集
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new ReadFileTool());
+        toolkit.registerTool(new WriteFileTool());
+
+        // 4. 完整 Agent 配置
+        ReActAgent agent = ReActAgent.builder()
+                .name("Assistant")
+                .sysPrompt("You are a helpful AI assistant")
+                .model(chatModel）
+                .maxIters(50)//Agent最大重试轮数包括（思考，行动，总结）
+                .longTermMemory(longTermMemory)
+                .longTermMemoryMode(LongTermMemoryMode.STATIC_CONTROL)  // 也可以用 BOTH
+                .enablePlan()                          // 启用计划模块
+                .toolkit(toolkit)
+                .memory(memory)   //引入AutoContextMemory（config,Model）对象
+                .hook(new AutoContextHook())      // 自动上下文压缩 Hook用于条件判断llm推理前
+                .build();
+
+        // 5. Session 持久化
+        String sessionId = "user_hollis_session";
+        //持久化存储路径
+        Path sessionPath = Paths.get(System.getProperty("user.home"),
+                ".agentscope", "examples", "sessions");
+        Session session = new JsonSession(sessionPath);
+        
+        agent.loadIfExists(session, sessionId);  // 恢复短期记忆
+
+        // 6. 多轮交互循环
+        try {
+            // ...用户输入循环...
+            Msg userMsg = Msg.builder()
+                    .role(MsgRole.USER)
+                    .content(TextBlock.builder().text("...").build())
+                    .build();
+            Msg response = agent.call(userMsg).block();
+            agent.saveTo(session, sessionId);  // 保存短期记忆 + 工具状态
+
+        } catch (Throwable e) {
+            agent.saveTo(session, sessionId);  // 异常时也保存
+        }
+    }
+}
+```
+
+```
+用户输入
+          ↓
+   ┌──────────────────┐
+   │AutoContextMemory │  ← 短期记忆（带自动压缩）
+   │  最近 20 条原文 +  │     超长后早期消息会被 LLM 总结
+   │  早期对话摘要      │
+   └──────────────────┘
+          ↓
+   ┌──────────────────┐
+   │  JsonSession     │  ← 会话持久化（跨重启）
+   │  序列化到磁盘      │     保存的是上面的短期记忆
+   └──────────────────┘
+          ↓
+   ┌──────────────────┐
+   │  Mem0LongTermMem │  ← 长期记忆（跨会话语义检索）
+   │  向量化提取的事实   │     每轮自动写入，每轮自动召回
+   └──────────────────┘
+```
 
 ### Hook
 
@@ -11695,13 +11946,396 @@ public class LoggingHook implements Hook {
 
 ### 工具集成
 
+#### @Tool
 
+```
+public class SimpleTools {
+    //工具名称及工具描述
+    @Tool(name = "get_time", description = "获取当前时间")
+    public String getTime(
+    //工具入参及描述
+            @ToolParam(name = "zone", description = "时区，例如：北京") String zone) {
+     //工具的核心逻辑
+        return java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+}
+```
+
+#### AgentTool
+
+**AgentTool是一个接口**
+
+```
+public interface AgentTool {
+
+    String getName();
+   
+    String getDescription();
+//获取工具的入参
+    Map<String, Object> getParameters();
+
+    default Map<String, Object> getOutputSchema() {
+        return null;
+    }
+//工具核心逻辑异步执行
+    Mono<ToolResultBlock> callAsync(ToolCallParam param);
+}
+```
+
+**实现GetParameters方法进行自定义Map工具入参**
+
+**Map最终序列化为Json放入LLMApi的tools[].function.parameters按照约束生成约束**
+
+```
+ @Override
+    public Map<String, Object> getParameters() {
+        return Map.of(
+            "type", "object",
+            "properties", Map.of(
+                "command", Map.of("type", "string", "description", "The shell command to execute")
+            ),
+            "required", List.of("sql")
+        );
+    }
+```
+
+- **getOutputSchema()为MCP工具设计**
+- **MCP 协议允许 server 声明工具的输出结构。框架里 McpTool 覆写了此方法来暴露 MCP server 提供的 outputSchema**
+
+**区别**
+
+- **注解式由框架通过反射+@ToolParam 自动生成这个 Map**
+- **接口式需要你手动构造，但获得了完全的自由度，做动态 schema（比如根据运行时状态决定有哪些参数**
+
+- **Schema不确定的场景，如McpTool 的参数来自远程 MCP Server**
+- **没法在编译时写注解，因为参数是什么取决于对面那个进程。所以它必须自己实现 getParameters()，把远端拿到的 inputSchema 原样返回**
+
+#### 注册工具箱
+
+```
+Toolkit toolkit = new Toolkit();
+toolkit.registerTool(new SimpleTools());
+
+ReActAgent jarvis = ReActAgent.builder()
+                .toolkit(toolkit)
+                .build();
+```
+
+#### 工具组
+
+- **工具太多入参较多，模型选错工具**
+- **把工具按功能进行分组，只有激活可见，还可以通过skill渐进式批露加载工具**，
+
+```
+/ 创建分组（默认 active=true）
+toolkit.createToolGroup("file_ops", "File system operations", false);  // 初始不激活
+toolkit.createToolGroup("math_ops", "Math calculations", false);
+
+// 注册工具到分组
+toolkit.registration().tool(new FileTools()).group("file_ops").apply();
+toolkit.registration().tool(new MathTools()).group("math_ops").apply();
+
+// 运行时激活/停用
+toolkit.updateToolGroups(List.of("file_ops"), true);   // 激活
+toolkit.updateToolGroups(List.of("math_ops"), false);  // 停用
+```
+
+#### 执行上下文
+
+- **@ToolParam这个模型参数，最终由模型进行决策，调用哪些工具**
+- **不通过模型决策则通过ToolExecutionContext,静态的数据**
+- **用途：注入当前用户信息、数据库连接、Session 上下文**
+
+**流程**
+
+- **定义固定参数的实体类并利用builder模式ToolExecutionContext（new 对象名(属性)）**
+- **绑定到Toolkit对象（ToolkitConfig.defaultContext(上下文)）**
+- **框架自动注入**
+
+```
+// 定义上下文对象
+public class UserContext {
+    private String userId;
+    private String role;
+    // getters...
+}
+
+// 注册上下文
+ToolExecutionContext context = ToolExecutionContext.builder()
+    .register(new UserContext("user_123", "admin"))
+    .build();
+
+// 绑定到 toolkit
+Toolkit toolkit = new Toolkit(ToolkitConfig.builder()
+    .defaultContext(context)
+    .build());
+
+// 工具方法中通过类型自动注入
+@Tool(name = "get_profile")
+public String getProfile(UserContext ctx) {  // ★ 框架自动注入，不在 schema 里
+    return "User: " + ctx.getUserId() + ", Role: " + ctx.getRole();
+}
+```
+
+**工具进度**
+
+```
+@Tool(name = "analyze_data", description = "Analyze large dataset")
+public String analyzeData(
+        @ToolParam(name = "dataset") String dataset,
+        ToolEmitter emitter) {   // ★ 框架自动注入，不需要 @ToolParam
+
+    emitter.emit(ToolResultBlock.text("Loading dataset..."));
+    loadData(dataset);
+
+    emitter.emit(ToolResultBlock.text("Processing 50%..."));
+    processHalf();
+
+    emitter.emit(ToolResultBlock.text("Processing 100%..."));
+    processAll();
+
+    return "Analysis complete: 1000 records processed, 3 anomalies found.";
+}
+```
+
+#### 调用流程
+
+```
+用户消息 → ReActAgent.call()
+    │
+    ├─ 1. 构造 messages + tools schema → 送模型
+    │
+    ├─ 2. 模型返回 ToolUseBlock（可能多个）
+    │       {name: "get_weather", input: {city: "Beijing"}}
+    │
+    ├─ 3. Toolkit.callTools(toolUseBlocks, config, agent, context)
+    │       │
+    │       ├─ ToolExecutor.executeAll()
+    │       │   ├─ 并行/串行分发
+    │       │   ├─ 每个 tool: 合并预设参数 → 注入上下文 → callAsync()
+    │       │   ├─ 超时/重试由 ExecutionConfig 控制
+    │       │   └─ 返回 List<ToolResultBlock>
+    │       │
+    │       └─ ToolResultBlock 回填到 memory（作为 ToolResultBlock 消息）
+    │
+    ├─ 4. 继续推理（带工具结果的 messages → 模型）
+    │
+    └─ 5. 模型生成最终回复 或 继续调用更多工具（循环，受 maxIters 限制）
+```
 
 ### MCP接入
 
+#### MCPServer
 
+```
+@Service
+public class WeatherService {
+    @Tool(name = "getWeather", description = "根据城市名称查询天气信息",returnDirect = true)
+    public String getWeather(String city) {
+        if (city == null) {
+            return "请提供城市名称";
+        }
+        return switch (city) {
+            case "北京" -> "北京: 晴, 25°C";
+            case "上海" -> "上海: 多云, 22°C";
+            case "深圳" -> "深圳: 小雨, 28°C";
+            default -> city + ": 下雪, -20°C";
+        };
+    }
+}
+```
+
+```
+@SpringBootApplication
+public class McpServerSseApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(McpServerSseApplication.class, args);
+    }
+
+    @Bean
+    public ToolCallbackProvider weatherTools(WeatherService weatherService) {
+        // 自动扫描 WeatherService 中带有 @Tool 注解的方法
+        return MethodToolCallbackProvider.builder().toolObjects(weatherService).build();
+    }
+}
+```
+
+#### ClientWrapper
+
+**AI Agent（MCP Client） ←──MCP协议──→ Tool Server（MCP Server）**
+
+- **MCP Server 暴露工具列表 + 执行入口**
+- **MCP Client 负责发现工具、生成 schema 给 LLM、调用执行**
+
+**通过McpClientBuilder.create(name)，他支持三种传输层**
+
+```
+// StdIO 传输：启动子进程，通过 stdin/stdout 通信
+//Java 写入子进程的 stdin：发送 MCP 请求和通知。
+//Java 读取子进程的 stdout：接收 MCP 响应和通知这两个是通信手段
+//npx 启动的 MCP Server 子进程
+McpClientWrapper wrapper = McpClientBuilder.create("filesystem")
+    .stdioTransport("npx", List.of("-y", "@anthropic/mcp-filesystem"))//与MCP建立通信渠道
+    .buildAsync()
+    .block();
+
+// SSE 传输：连接远程 HTTP Server 的 SSE 端点
+McpClientWrapper wrapper = McpClientBuilder.create("remote-tools")
+    .sseTransport("http://localhost:8080/mcp/sse")
+    .header("Authorization", "Bearer token123")
+    .buildAsync()
+    .block();
+
+// Streamable HTTP 传输：新版 MCP 推荐的双向 HTTP 流
+McpClientWrapper wrapper = McpClientBuilder.create("cloud-tools")
+    .streamableHttpTransport("https://api.example.com/mcp")
+    .header("X-API-Key", "key123")
+    .queryParam("version", "v2")
+    .buildAsync()
+    .block();
+```
+
+**buildAsync()** **内部做了什么**
+
+- **根据选择的传输类型创建底层 Transport 对象**
+- **建立连接（StdIO = 启动子进程；SSE/HTTP = HTTP 握手）**
+- **发送 MCP 协议的 initialize 请求（交换 capabilities）**
+- **调用 tools/list 获取远端所有工具定义**
+- **为每个工具定义创建 McpToolDefinition 对象**
+- **包装为 McpClientWrapper 返回**
+
+| 传输方式 | 配置内容         |     Server 如何运行     |
+| -------- | ---------------- | :---------------------: |
+| StdIO    | 可执行命令和参数 |  客户端启动本地子进程   |
+| HTTP     | URL 地址         | Server 通常已经独立启动 |
+| SSE      | URL 地址         | Server 通常已经独立启动 |
+
+**McpClientWrapper对MCPClient进行了封装**
+
+- **持有连接状态（transport 实例、session 信息）**
+- **缓存工具列表（从 tools/list 获取的 List<McpToolDefinition>）**
+- **提供工具调用入口：callTool(name, arguments) → Mono<McpCallToolResult>**
+- **生命周期管理：close() 关闭连接/杀子进程**
+
+**McpClientWrapper提供了三个具体的实现**
+
+**McpAsyncClientWrapper（推荐使用）**
+
+- **封装 MCP SDK 的 McpAsyncClient，所有操作返回 Reactor Mono/Flux，支持响应式异步执行。**
+- **不阻塞线程，适合高并发、WebFlux 应用等需要非阻塞 I/O 的场景**
+
+**McpSyncClientWrapper**
+
+- **封装 MCP SDK 的 McpSyncClient，所有操作阻塞式执行。**
+- **适合简单场景、命令行工具、批处理任务等不需要高并发的场景**
+
+**HigressMcpClientWrapper**
+
+- **专门用于对接 Higress AI 网关 的 MCP 客户端实现。**
+- **工具治理（鉴权、限流、路由、可观测）下沉到网关层，Agent 只负责调用**
+
+#### **MCP工具**
+
+**Toolkit.registerMcpClient() 方法，用来注册MCP工具**
+
+```
+Toolkit toolkit = new Toolkit();
+
+// 注册 MCP 服务器的所有工具
+toolkit.registerMcpClient(mcpClient).block();
+```
+
+无论本地还是远端，模型看到的是统一的 tools 列表
+
+#### McpTool
+
+**MCPTool实现了AgentTool接口，McpTool单独实现了getOutputSchema这个方法**
+
+**远端获取工具参数，将MCP当作Tool的形式**
+
+![image.webp](https://img.f3f3.top/picgo/1790587261393_image.webp)
+
+```
+
+// 前置条件：先启动 mcp-server-sse 模块（端口 8003），提供天气查询工具 getWeather。
+
+ * 本示例通过 AgentScope 的 McpClientBuilder 以 SSE 方式连接到 MCP Server，
+ * 然后注册其暴露的工具（getWeather），让 ReActAgent 能够自动调用该工具来回答天气相关问题。
+ */
+public class McpClientDemo {
+
+    public static void main(String[] args) {
+        String apiKey = "";
+        // 1. 通过 SSE 传输方式连接到 MCP Server（mcp-server-sse 模块，端口 8003）
+        McpClientWrapper mcpClient = McpClientBuilder.create("weather-mcp")
+                .sseTransport("http://127.0.0.1:8003/sse")
+                .timeout(Duration.ofSeconds(30))
+                .buildAsync()
+                .block();
+
+        System.out.println("✅ 已成功连接到 MCP Server (SSE)");
+
+        // 2. 创建 Toolkit 并注册 MCP 客户端中的所有工具
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerMcpClient(mcpClient).block();
+
+        // 打印已注册的工具
+        System.out.println("📦 已注册的工具列表: " + toolkit.getToolNames());
+
+        // 3. 创建 ReActAgent，配置模型与工具
+        ReActAgent agent = ReActAgent.builder()
+                .name("WeatherAssistant")
+                .sysPrompt("你是一个天气助手，可以帮用户查询各个城市的天气信息。请使用工具来获取天气数据。")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-max")
+                        .build())
+                .toolkit(toolkit)
+                .memory(new InMemoryMemory())
+                .build();
+
+        // 4. 发送消息，让 Agent 调用 MCP 工具查询天气
+        System.out.println("\n--- 第1轮对话 ---");
+        Msg msg1 = Msg.builder()
+                .textContent("北京今天天气怎么样？")
+                .build();
+        Msg reply1 = agent.call(msg1).block();
+        System.out.println("用户: 北京今天天气怎么样？");
+        System.out.println("Agent: " + reply1.getTextContent());
+
+        // 第2轮对话 - 查询另一个城市
+        System.out.println("\n--- 第2轮对话 ---");
+        Msg msg2 = Msg.builder()
+                .textContent("深圳呢？")
+                .build();
+        Msg reply2 = agent.call(msg2).block();
+        System.out.println("用户: 深圳呢？");
+        System.out.println("Agent: " + reply2.getTextContent());
+
+        // 5. 清理资源
+        toolkit.removeMcpClient("weather-mcp").block();
+        System.out.println("\n🔌 已断开 MCP 连接");
+    }
+}
+```
 
 ### RAG
+
+
+
+
+
+
+
+
+
+### Skill
+
+
+
+
 
 
 
@@ -11716,6 +12350,10 @@ public class LoggingHook implements Hook {
 
 
 ## Agent2.0
+
+
+
+
 
 ## 微调
 

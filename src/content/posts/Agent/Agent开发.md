@@ -12323,27 +12323,512 @@ public class McpClientDemo {
 
 ### RAG
 
+#### Document
 
+```
+public class Document {
 
+    private final String id;
+    private final DocumentMetadata metadata;
+    private double[] embedding;
+    private Double score;
+    private String vectorName;
+}
+```
 
+- **Document 用来表示在RAG系统的每一个chunk**
+- **DocumentMetadata 内部装的是一个 ContentBlock**
+- **让"文本块"和"图片块"共用一条 RAG 管线**
 
+#### Knowledge
 
+**AgentScope定义了三个接口（KnowLedge/Document/RetrieveConfig），相当于知识库接口**
 
+```
+public interface Knowledge {
 
+    Mono<Void> addDocuments(List<Document> documents);
+
+    Mono<List<Document>> retrieve(String query, RetrieveConfig config);
+}
+```
+
+- **这个接口有很多是实现类SimpleKnowledge 换成 BailianKnowledge、DifyKnowledg**
+- **将实现类对象以多态的形式塞进ReactAgent中即可运行**
+
+#### Retrieve
+
+**RetrieveConfig** 用来配置检索参数
+
+```
+RetrieveConfig.builder()
+    .limit(5)                       // top-k，默认 5
+    .scoreThreshold(0.5)            // 相似度阈值，默认 0.5
+    .vectorName("doc_v1")           // 向量空间名（可选，用于隔离不同 corpus）
+    .conversationHistory(history)   // 多轮上下文（百炼会用它做 query rewrite）
+    .build();
+```
+
+#### 插入模式
+
+##### Generic
+
+**检索知识库的时机是由谁决定**
+
+| 模式        | 触发方                 | 注入位置                                | 适合场景                               |
+| ----------- | ---------------------- | --------------------------------------- | -------------------------------------- |
+| **GENERIC** | 框架（每次推理前自动） | 在 `inputMessages` 末尾追加 `user` 消息 | FAQ / 知识助手，每条用户提问都需要检索 |
+| **AGENTIC** | LLM 自主决策           | 作为 `retrieve_knowledge` 工具结果回灌  | 多技能 Agent，RAG 是诸多工具之一       |
+| **NONE**    | —                      | —                                       | 关闭 RAG                               |
+
+```
+private Mono<PreCallEvent> handlePreCall(PreCallEvent event) {
+//获取用户信息
+    String query = extractQueryFromMessages(event.getInputMessages());
+    if (query == null || query.isBlank()) return Mono.just(event);
+//利用用户信息去检索知识库
+    return knowledge.retrieve(query, defaultConfig)
+        .flatMap(docs -> {
+            if (docs.isEmpty()) return Mono.just(event);
+            List<Msg> enhanced = new ArrayList<>(event.getInputMessages());
+            enhanced.add(buildKnowledgeUserMsg(docs));   // 追加到末尾
+            event.setInputMessages(enhanced);
+            return Mono.just(event);
+        })
+        .onErrorResume(err -> {
+            log.warn("Generic RAG retrieval failed: {}", err.getMessage());
+            return Mono.just(event);                     // ← 失败兜底，不打断主流程
+        });
+}
+```
+
+- **用户发送信息，获取到信息**
+- **用信息去Knowledge知识库检索相关文档**
+- **检索到的内容添加到用户信息之前**
+- **Agent 处理增强后的消息并响应**
+
+##### Agentic
+
+**让Agent来决策什么时候该调用RAG做检索，知识库检索封装成一个普通工具**
+
+```
+定义工具名称及其描述
+@Tool(
+        name = "retrieve_knowledge",
+        description =
+                "Retrieve relevant documents from knowledge base. Use this tool when you need"
+                    + " to find specific information or when user asks questions about stored"
+                    + " knowledge.")
+public String retrieveKnowledge(
+        //  定义工具入参及其描述
+        @ToolParam(
+                        name = "query",
+                        description =
+                                "The search query to find relevant documents in the knowledge"
+                                        + " base")
+                String query,
+        @ToolParam(
+                        name = "limit",
+                        description = "Maximum number of documents to retrieve (default: 5)",
+                        required = false)
+                Integer limit,
+                
+                //Agent由框架自动注入
+        Agent agent) {
+
+    // 设置retrevieConfig的limit默认值
+    if (limit == null) {
+        limit = 5;
+    }
+
+    // 根据上下文判断是否为ReactAgent,如果是获取记忆添加到上下文
+    List<Msg> conversationHistory = null;
+    if (agent instanceof ReActAgent reActAgent) {
+        conversationHistory = reActAgent.getMemory().getMessages();
+    }
+
+    //设置根据上下文构建检索参数配置
+    RetrieveConfig config =
+            this.defaultConfig
+                    .mutate()
+                    .limit(limit)  //Top-k参数
+                    .conversationHistory(conversationHistory) //上下文
+                    .build();
+     //检索知识库KonwLedge
+    return knowledge
+            .retrieve(query, config)
+            .map(this::formatDocumentsForTool)  //格式化文档
+            .onErrorReturn("Failed to retrieve knowledge for query: " + query)
+
+            .block(); 
+//等待同步转换结果knowledge.retrieve() 返回的是响应式异步对象，而 Tool 接口要求返回普通 String
+}
+```
+
+```
+用户发送问题
+    │
+    ▼
+Agent 第一次推理
+    │
+    ├── 不需要知识库
+    │      └── 直接生成答案
+    │
+    └── 需要知识库
+           │
+           ▼
+调用 retrieve_knowledge自定义工具
+           │
+           ▼
+  Agent agent agent 没有标注 @ToolParam         
+框架执行工具时自动注入当前 Agent
+           │
+           ▼
+读取 Agent 会话历史
+           │
+           ▼
+构造 RetrieveConfig
+
+defaultConfig
+    │
+    ▼
+mutate()
+    │
+    ├── 覆盖 limit
+    ├── 加入 conversationHistory
+    ▼
+build()
+    │
+    ▼
+本次检索专用 RetrieveConfig
+
+                     
+调用 Knowledge.retrieve()
+           │
+           ▼
+文档格式化为工具结果
+           │
+           ▼
+工具结果回灌 Agent
+           │
+           ▼
+Agent 第二次推理并生成最终答案
+```
+
+- **用户发送查询**
+- **Agent 推理并决定是否检索知识**
+- **如果需要，Agent 调用 `retrieve_knowledge(query="...")`**
+- **检索到的文档作为工具结果返回**
+- **Agent 使用检索到的信息再次推理**
+
+**Hook和工具，是在ReActAgent构造的时候，自动配置进去的**
+
+**聚合知识库**
+
+- **只有一个知识库：直接使用。**
+- **有多个知识库：通过 `buildAggregatedKnowledge()` 聚合**
+
+```
+if (knowledgeBases.size() == 1) {
+    aggregatedKnowledge = knowledgeBases.iterator().next();
+} else {
+    aggregatedKnowledge = buildAggregatedKnowledge();
+}
+```
+
+**io.agentscope.core.ReActAgent.Builder#configureRAG**
+
+```
+ReActAgent.Builder 构建 Agent
+        │
+        ▼
+configureRAG(agentToolkit)
+        │
+        ├── GENERIC
+        │     └── 注册 GenericRAGHook
+        │
+        ├── AGENTIC
+        │     └── 注册 KnowledgeRetrievalTools
+        │             └── 暴露 retrieve_knowledge 工具
+        │
+        └── NONE
+              └── 不配置任何 RAG 能力
+   
+    switch (ragMode) {
+    case GENERIC -> {
+        GenericRAGHook ragHook =
+                new GenericRAGHook(aggregatedKnowledge, retrieveConfig);
+        hooks.add(ragHook);
+    }
+    case AGENTIC -> {
+        KnowledgeRetrievalTools tools =
+                new KnowledgeRetrievalTools(aggregatedKnowledge, retrieveConfig);
+        agentToolkit.registerTool(tools);
+    }
+    case NONE -> {
+        // Do nothing
+    }
+}          
+```
+
+#### 文档处理
+
+```
+<dependency>
+    <groupId>com.alibaba</groupId>
+    <artifactId>dashscope-sdk-java</artifactId>
+    <version>2.22.9</version>
+    <exclusions>
+        <exclusion>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+        </exclusion>
+        <exclusion>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </exclusion>
+    </exclusions>
+</dependency>
+
+<dependency>
+   <groupId>com.aliyun</groupId>
+   <artifactId>bailian20231229</artifactId>
+   <version>2.13.1</version>
+</dependency>
+```
+
+```
+public class LocalRagDemo {
+    public static void main(String[] args) throws IOException {
+        String apiKey = "sk-xxxxxxx";
+
+        // 1. 起 Embedding + 内存向量库
+        EmbeddingModel embed = DashScopeTextEmbedding.builder()
+                .apiKey(apiKey).modelName("text-embedding-v3").dimensions(1024).build();
+          //向量数据库      
+        InMemoryStore store = InMemoryStore.builder().dimensions(1024).build();
+        //知识库
+        SimpleKnowledge knowledge = SimpleKnowledge.builder()
+                .embeddingModel(embed).embeddingStore(store).build();
+
+        // 2. 灌数据（PDF）
+        PDFReader reader = new PDFReader();
+        File file = new File("/Users/hollis/LLM课程视频/RAG材料/Java八股文介绍.pdf");
+        List<Document> docs = reader.read(ReaderInput.fromPath("/Users/hollis/LLM课程视频/RAG材料/Java八股文介绍.pdf")).block();
+        //添加到知识库
+        knowledge.addDocuments(docs).block();
+
+        // 3. 起 Agent，自动注入
+        ReActAgent agent = ReActAgent.builder()
+                .name("FAQBot")
+                .sysPrompt("基于检索到的知识回答用户问题；若没找到请明确告知。")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(apiKey)
+                        .modelName("qwen-max")
+                        .build())
+                .knowledge(knowledge)
+                .ragMode(RAGMode.GENERIC)     // 关键：自动 Hook
+                .build();
+
+        Msg msg = Msg.builder()
+                .role(MsgRole.USER)
+                .content(TextBlock.builder().text("这份JAVA八股文有哪些内容？").build())
+                .build();
+        System.out.println(agent.call(msg).block().getTextContent());
+    }
+}
+```
+
+- **SimpleKnowledge里封装了向量化和向量入库的能力**
+
+- **利用Reader读取文档放入里面就可以向量存储了，这个Knowledge对外提供能力**
+
+**PDFReader` 继承自 AbstractChunkingReader，读取文件时会把内容切分成多个 Document**
+
+```
+未切分时：
+一个完整文件 → 一个 Document
+
+切分后：
+一个文件 → 多个 Document
+             每个 Document 对应一个 Chunk
+```
+
+#### 多知识库
+
+```
+ReActAgent agent = ReActAgent.builder()
+    .knowledge(productDocsKB)
+    .knowledge(faqKB)
+    .knowledge(internalWikiKB)            // 框架自动 buildAggregatedKnowledge
+    .ragMode(RAGMode.GENERIC)
+    .build();
+```
+
+**会触发ReActAgent.Builder中的buildAggregatedKnowledge做多路检索和合并、重排**
 
 ### Skill
 
+##### 数据模型
 
+**先告诉 LLM“有哪些技能”，等 LLM 判断需要某个 Skill 时，再通过 `load_skill_through_path` 动态加载并激活**
 
+- **技能目录预注入**
+- **技能内容按需加载**
+- **关联工具延迟开放、**
+- **代码受控执行**
 
+|      字段      |                         作用                         |
+| :------------: | :--------------------------------------------------: |
+|     `name`     |                      Skill 名称                      |
+| `description`  |            告诉 LLM 何时应该选择该 Skill             |
+| `skillContent` |              `SKILL.md` 的核心指令内容               |
+|   `metadata`   |              名称、描述以及其他扩展信息              |
+|  `resources`   |          Skill 附带的脚本、模板、参考资料/           |
+|    `source`    | Skill 来源，如 `filesystem`、`git`、`mysql`、`nacos` |
 
+```
+AgentSkill skill = new AgentSkill(
+    "my-skill",
+    "Does something useful",
+    "Detailed instructions here...",
+    Map.of("scripts/run.py", "print('hello')")
+);
 
+//通过Builder
+AgentSkill skill = AgentSkill.builder()
+    .name("my-skill")
+    .description("Does something useful")
+    .skillContent("Instructions here...")
+    .addResource("scripts/run.py", "print('hello')")
+    .build();
+      
+ //持久化存储中加载  
+ //AgentScope 提供了 Repository 模式来从不同来源加载 Skill，接口为 AgentSkillRepository
+ public interface AgentSkillRepository extends AutoCloseable {
+    AgentSkill getSkill(String name);
+    List<String> getAllSkillNames();
+    List<AgentSkill> getAllSkills();
+    boolean save(List<AgentSkill> skills, boolean force);
+    boolean delete(String skillName);
+    boolean skillExists(String skillName);
+    String getSource();
+}
+```
+
+**加载获取到AgentSkill类**
+
+##### SkillBox
+
+- **注册管理**：保存 Agent 当前可用的 Skill
+- **提示词生成**：生成 `<available_skills>` XML 目录
+- **状态管理**：控制 Skill 的激活和停用
+- **能力管理**：启停关联工具组、上传资源、配置执行环境
+
+```
+Toolkit toolkit = new Toolkit();
+SkillBox skillBox = new SkillBox(toolkit);
+
+// 1. 加载并注册 Skill
+AgentSkill skill = loadSkillFromSomewhere();
+skillBox.registerSkill(skill);
+
+// 2. 注册 Skill 加载工具（让 Agent 能动态加载 Skill）
+skillBox.registerSkillLoadTool();
+
+// 3. 将 SkillBox 绑定到 Agent
+ReActAgent agent = ReActAgent.builder()
+    .name("Assistant")
+    .model(model)
+    .toolkit(toolkit)
+    .skillBox(skillBox)
+    .build();
+```
+
+```
+AgentSkillRepository
+        │
+        │ 加载
+        ▼
+   AgentSkill
+        │
+        │ registerSkill()
+        ▼
+    SkillBox
+        │
+        ├── 生成 Skill 目录提示词
+        ├── 注册 Skill 加载工具
+        ├── 管理 Skill 激活状态
+        ├── 管理关联 ToolGroup
+        └── 管理脚本执行环境
+```
+
+**沙箱：SkillBox 提供了强大的代码执行配置能力，允许 Skill 中的脚本在受控环境中运行。**
+
+```
+skillBox.codeExecution()
+    .workDir("/path/to/workdir")          // 工作目录（不设置则创建临时目录）
+    .withShell()                           // 启用默认 Shell（python, python3, node, nodejs）
+    .withRead()                            // 启用文件读取
+    .withWrite()                           // 启用文件写入
+    .enable();
+```
+
+##### 注入工具
+
+**在 `build()` 阶段，configureSkillBox()自动完成初始化**
+
+- **把 SkillBox 绑定到当前 Toolkit**
+- **由 SkillToolFactory.createSkillAccessToolAgentTool() 创建注册AgentTool的 load_skill_through_path**
+- **暴露关联工具**——**激活后，该 Skill 绑定的工具组才对 LLM 可见**
+- **注册 SkillHook，用于注入 Skill 提示词**
+
+##### **注入提示词**
+
+- **在SkillHook中，在PreReasoningEvent阶段会讲将skill提示词注入到系统提示词中**
+- **注册之后的提示词在AgentSkillPromptProvider 中能看到LLM决定调用哪个工具**
+- **load_skill_through_path根据skillID动态加载Skill.md并激活交给LLM**
+
+```
+1. Agent 初始化
+   └── configureSkillBox() 注册 load_skill_through_path 到 Toolkit
+   
+2. 每次用户调用 agent.call()
+   └── SkillHook.onEvent(PreReasoningEvent)
+       └── 将可用 Skill 列表注入 System Message
+           └── LLM 看到 <available_skills> XML 提示
+           
+3. LLM 决定使用某个 Skill
+   └── 调用 load_skill_through_path(skillId="...", path="SKILL.md")
+       └── Skill 被激活
+       └── 关联工具组被启用
+       └── 返回 SKILL.md 内容给 LLM
+       
+4. LLM 阅读 Skill 内容后
+   └── 调用该 Skill 暴露的工具（或执行脚本）
+```
 
 ### 人工确认
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 ### 计划执行
+
+
+
+
 
 
 

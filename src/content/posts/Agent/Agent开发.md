@@ -12810,21 +12810,369 @@ skillBox.codeExecution()
 
 ### 人工确认
 
+#### 思考之后
+
+**·Human-in-Loop**允许在 Agent 执行过程中**暂停、人工审查、交互确认后继续执行的机制**
+
+**模型想调 delete_file，我希望先弹出 "确认/取消"**
+
+```
+//ReactAgent中reasoning和acting中间的代码块
+
+.flatMap(this::notifyPostReasoning) //执行所有PostReasoning的Hook
+.flatMap(event -> {
+    Msg msg = event.getReasoningMessage();
+    if (msg != null) memory.addMessage(msg);     // ① 先把推理结果写进 memory
+    
+		//PostReasoningEvent返回stopRequested字段，并进行判断，HITL中断
+    if (event.isStopRequested()) {                // ② 检查暂停标志
+        return Mono.just(msg.withGenerateReason(
+                GenerateReason.REASONING_STOP_REQUESTED));   // ③ 直接返回，不进 acting
+    }
+```
+
+- **PostReasoningEvent里面有个StopAgent方法将stopRequested字段设置为true**
+- **定义一个hook去监听这个PostReasoningEvent**
+
+```
+   //定义一个hook去监听PostReasoningEvent
+Hook confirmationHook = new Hook() {
+    //定义一个敏感工具列表
+    private static final List<String> SENSITIVE_TOOLS = List.of("delete_file", "send_email");
+
+    @Override
+    public <T extends HookEvent> Mono<T> onEvent(T event) {
+        if (event instanceof PostReasoningEvent e) {
+            Msg reasoningMsg = e.getReasoningMessage();
+            List<ToolUseBlock> toolCalls = reasoningMsg.getContentBlocks(ToolUseBlock.class);
+
+            // 如果包含敏感工具，暂停等待确认
+            boolean hasSensitive = toolCalls.stream()
+                .anyMatch(t -> SENSITIVE_TOOLS.contains(t.getName()));
+
+            if (hasSensitive) {
+                e.stopAgent();
+            }
+        }
+        return Mono.just(event);
+    }
+};
+
+ReActAgent agent = ReActAgent.builder()
+    .name("Assistant")
+    .model(model)
+    .toolkit(toolkit)
+    .hook(confirmationHook)
+    .build();
+```
+
+**触发了HIL用户拿到的 Msg 里一定带着 ToolUseBlock（还没执行），所以判断条件就是它。如果用户同意，则继续执行，否则提示失败。**
+
+```
+Msg resp = agent.call(userMsg).block();
+
+while (resp.hasContentBlocks(ToolUseBlock.class)) {
+    showPendingToUser(resp);
+    if (userClickYes()) {
+        resp = agent.call().block();           // 无参 → 继续跑 acting
+    } else {
+        resp = agent.call(buildCancelMsg(resp)).block();  // 注入伪 result
+    }
+}
+```
+
+- **如果想要继续执行，会执行到acting方法中，而这个方法的第一句就是获取pending的ToolUseBlock，然后把他执行完,pending指的是正在排队，还没有搞定**
+- **ToolUseBlock模型生成的工具参数进行了封装,里面有id,name,模型不同生成json不同中input,state**
+
+```
+private Mono<Msg> acting(int iter) {
+        // Extract only pending tool calls (those without results in memory)
+        List<ToolUseBlock> pendingToolCalls = extractPendingToolCalls();
+}
+```
+
+#### 行动之后
+
+**生成了一封邮件草稿，让人看完再决定要不要发下一步动作，Event是PostActingEvent**
+
+```
+return Flux.fromIterable(successPairs)
+        .concatMap(this::notifyPostActingHook)   // 串行通知每个工具的 PostActing
+        .last()                                  // 取最后一个事件
+        .flatMap(event -> {
+            if (event.isStopRequested()) {
+                return Mono.just(event.getToolResultMsg()
+                        .withGenerateReason(GenerateReason.ACTING_STOP_REQUESTED));
+            }
+            ...
+        });
+```
+
+**如果应用层忘了恢复怎么办？**
+
+- **暂停后用户直接刷新页面**
+- **新一轮发了一条普通问题进来**
+
+**这时 memory 里还有"悬空的 ToolUseBlock"，下一轮 reasoning 一进 LLM 就会报错。**
+
+**PendingToolRecoveryHook（priority=10，最先跑）**
+
+```
+private Mono<PreCallEvent> handlePreCall(PreCallEvent event) {
+    Set<String> pendingIds = findPendingToolUseIds(memory);
+    if (pendingIds.isEmpty()) return Mono.just(event);
+
+    List<Msg> input = event.getInputMessages();
+
+    // ① 输入为空 = 用户在用 agent.call() 恢复 → 不要管
+    if (input == null || input.isEmpty()) return Mono.just(event);
+
+    // ② 输入里已经有 ToolResult = 应用层自己处理过 → 不要管
+    if (input.stream().anyMatch(m -> m.hasContentBlocks(ToolResultBlock.class)))
+        return Mono.just(event);
+
+    // ③ 否则注入合成 error result，避免崩溃
+    patchPendingToolCalls(reactAgent, memory, pendingIds);
+    return Mono.just(event);
+}
+```
+
+#### Demo
+
+```
+public class HitlDemo {
+
+    public static class Tools {
+        @Tool(name = "delete_file", description = "Delete a file")
+        public String del(@ToolParam(name = "filename") String f) {
+            return "deleted " + f;
+        }
+        @Tool(name = "search_web", description = "Search the web")
+        public String search(@ToolParam(name = "q") String q) {
+            return "results for " + q;
+        }
+    }
+
+    static class ConfirmHook implements Hook {
+        static final List<String> SENSITIVE = List.of("delete_file");
+        @Override public <T extends HookEvent> Mono<T> onEvent(T e) {
+            if (e instanceof PostReasoningEvent p) {
+                boolean dangerous = p.getReasoningMessage()
+                        .getContentBlocks(ToolUseBlock.class).stream()
+                        .anyMatch(t -> SENSITIVE.contains(t.getName()));
+                if (dangerous) p.stopAgent();
+            }
+            return Mono.just(e);
+        }
+    }
+
+    public static void main(String[] args) {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new Tools());
+
+        ReActAgent agent = ReActAgent.builder()
+                .name("SafeAgent")
+                .model(DashScopeChatModel.builder()
+                        .apiKey(System.getenv("DASHSCOPE_API_KEY"))
+                        .modelName("qwen-plus").stream(true)
+                        .formatter(new DashScopeChatFormatter()).build())
+                .toolkit(toolkit)
+                .memory(new InMemoryMemory())
+                .hook(new ConfirmHook())
+                .build();
+
+        Scanner sc = new Scanner(System.in);
+        while (true) {
+            System.out.print("You: ");
+            Msg userMsg = Msg.builder().role(MsgRole.USER)
+                    .content(TextBlock.builder().text(sc.nextLine()).build()).build();
+            Msg resp = agent.call(userMsg).block();
+
+            while (resp != null && resp.hasContentBlocks(ToolUseBlock.class)) {
+                System.out.println("⚠ Pending tools: " + resp.getContentBlocks(ToolUseBlock.class));
+                System.out.print("Confirm? (y/n): ");
+                if (sc.nextLine().equalsIgnoreCase("y")) {
+                    resp = agent.call().block();   // 无参恢复
+                } else {
+                    List<ToolResultBlock> cancel = resp.getContentBlocks(ToolUseBlock.class).stream()
+                            .map(t -> ToolResultBlock.of(t.getId(), t.getName(),
+                                    TextBlock.builder().text("Cancelled").build()))
+                            .toList();
+                    Msg cancelMsg = Msg.builder().role(MsgRole.TOOL)
+                            .content(cancel.toArray(new ToolResultBlock[0])).build();
+                    resp = agent.call(cancelMsg).block();
+                }
+            }
+            System.out.println("Agent: " + resp.getTextContent());
+        }
+    }
+}
+```
+
+#### 工具挂起
+
+-  **ToolSuspendException不是用来报告工具失败的，**
+- **把工具执行从 Agent 内部转移到外部系统，并通过结构化的挂起结果和真实 ToolResult 完成一次可恢复的 Agent 执行流程**
+
+```
+用户消息
+  ↓
+ReActAgent 推理
+  ↓
+LLM 生成 tool_use
+  ↓
+ToolExecutor 执行工具
+  ↓
+工具抛出 ToolSuspendException
+  ↓
+ToolExecutor 捕获异常
+  ↓
+转换为 suspended ToolResultBlock
+  ↓
+ReActAgent 区分成功结果和挂起结果
+  ↓
+返回 GenerateReason.TOOL_SUSPENDED
+  ↓
+外部系统执行真实工具
+  ↓
+外部系统构造 TOOL 消息写回 Agent
+  ↓
+再次调用 Agent
+  ↓
+Agent 从内存中读取工具真实结果
+  ↓
+继续后续推理
+```
+
+```
+@Tool(name = "external_api", description = "调用外部 API")
+public ToolResultBlock callExternalApi(
+        @ToolParam(name = "url") String url) {
+
+    throw new ToolSuspendException(
+        "等待外部 API 响应: " + url
+    );
+}
+```
+
+**工具实际上没有完成外部 API 调用，而是通过异常告诉框架**
+
+**ToolExecutor` 是整个机制中最关键的适配层**
+
+- **按照 LLM 生成的 `ToolUseBlock` 调用对应的工具函数**
+- **工具主动挂起，只有 `ToolSuspendException` 被转换为挂起结果**
+
+```
+throw new ToolSuspendException(
+    "等待外部 API 响应"
+);
+```
+
+- **ToolResultBlock.suspended(...)` 通常会生成类似这样的工具结果**
+
+**封装成Agent 消息流中的一部分，而不是一个无法处理的异常**
+
+```
+{
+  "toolCallId": "call_001",
+  "name": "external_api",
+  "content": "等待外部 API 响应: https://example.com",
+  "metadata": {
+    "agentscope_suspended": true
+  }
+}
+异常
+  ↓
+结构化工具结果
+  ↓
+带有 suspended 元数据
+```
 
 
 
+**ReActAgent.acting() 中的结果分流**
+
+```
+工具执行结果
+  ├── successPairs：ToolUseBlock + 正常 ToolResultBlock写入 Agent 内存，并继续下一轮 ReAct
+  └── pendingPairs：被 ToolSuspendException 中断的工具调用
+  ToolUseBlock + suspended ToolResultBlock
+```
+
+- 1. **将挂起信息写入返回消息，**
+
+- ```
+  设置：GenerateReason.TOOL_SUSPENDED
+  ```
+
+- **Agent 返回挂起状态，停止当前 ReAct 循环；将控制权返回给调用方**
 
 
 
+**外部系统如何接管工具执行**
+
+**调用方拿到挂起响应后，需要读取其中的 ToolUseBlock**
+
+```
+Msg response = agent.call(userMsg).block();
+
+if (response.getGenerateReason()
+        == GenerateReason.TOOL_SUSPENDED) {
+
+    List<ToolUseBlock> pendingTools =
+        response.getContentBlocks(ToolUseBlock.class);
+
+    for (ToolUseBlock toolUse : pendingTools) {
+        // 外部系统执行真实工具
+    }
+}
+```
 
 
 
+**Agent恢复执行**
+
+- **恢复执行的本质:恢复执行不是重新执行原始的 tool_use，而是把真实工具结果作为一条 TOOL 消息写回 Agent**
+
+```
+Msg finalResponse =
+    agent.call(toolResult).block();
+```
+
+- **外部系统必须使用原始工具调用的 ID 写回结果**
+
+```
+toolResult.toolCallId == toolUse.id
+```
 
 
 
+**extractPendingToolCalls()方法的作用**
 
+**此时内存中的信息有什么？挂起状态不能只保存在内存中。实际系统通常需要保存**
+
+```
+原始 ToolUseBlock
+挂起的 ToolResultBlock
+外部写入的真实 ToolResultBlock
+```
+
+**`extractPendingToolCalls()` 的目的就是避免重复执行已经完成的工具调用**
+
+```
+读取当前消息中的所有 ToolUseBlock
+  ↓
+检查每个 toolCallId 是否已有真实 ToolResultBlock
+  ↓
+已完成：跳过
+未完成：继续执行
+```
 
 ### 计划执行
+
+
+
+
 
 
 

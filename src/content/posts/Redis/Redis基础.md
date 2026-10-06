@@ -58,11 +58,12 @@ INCR：让一个整型的key自增1
 
 INCRBY:让一个整型的key自增并指定步长，例如：incrby num 2 让num值自增2
 
-SETNX：添加一个String类型的键值对，前提是这个key不存在，否则不执行
+SET NX：添加一个String类型的键值对，前提是这个key不存在，否则不执行
 set name yifei ex
 
-SETEX：添加一个String类型的键值对，并且指定有效期
+SET EX：添加一个String类型的键值对，并且指定有效期
 set name liyifei ex 10
+
 APPEND key value // 将指定的value追加到该key原来值value的末尾
 ```
 
@@ -273,19 +274,6 @@ public class JedisConnectionFacotry {
 
 ![image.webp](https://img.f3f3.top/picgo/1786325893036_image.webp)
 
-```
- @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
- 
-    @Test
-    void testString() {
-        // 写入一条String数据
-        redisTemplate.opsForValue().set("name", "虎哥");
-        // 获取string数据
-        Object name = redisTemplate.opsForValue().get("name");
-        System.out.println("name = " + name);
-```
-
 **Object序列化为字节形式，默认是采用JDK序列化*****可读性差，内存占用较大**
 
 ```
@@ -296,8 +284,10 @@ public class RedisConfig {
     public RedisTemplate<String, Object> redisTemplate(RedisConnectionFactory connectionFactory){
         // 创建RedisTemplate对象
         RedisTemplate<String, Object> template = new RedisTemplate<>();
+        
         // 设置连接工厂
         template.setConnectionFactory(connectionFactory);
+        
         // 创建JSON序列化工具
         GenericJackson2JsonRedisSerializer jsonRedisSerializer = 
             							new GenericJackson2JsonRedisSerializer();
@@ -322,7 +312,7 @@ public class RedisConfig {
  
     @Test
     void testString() {
-        // 写入一条String数据
+        // 写入一条对象Hash数据
         stringRedisTemplate.opsForValue().set("verify:phone:13600527634", "124143");
         // 获取string数据
         Object name = stringRedisTemplate.opsForValue().get("name");
@@ -337,6 +327,7 @@ public class RedisConfig {
         User user = new User("虎哥", 21);
         // 手动序列化
         String json = mapper.writeValueAsString(user);
+        
         // 写入数据
         stringRedisTemplate.opsForValue().set("user:200", json);
  
@@ -346,14 +337,12 @@ public class RedisConfig {
         User user1 = mapper.readValue(jsonUser, User.class);
         System.out.println("user1 = " + user1);
     }
-//使用StringRedisTemplate
-
-/写入Redis时，手动把对象序列化为JSON
-
-读取Redis时，手动把读取到的JSON反序列化为对象
 ```
 
+- **使用StringRedisTemplate**
+- **写入Redis时，手动把对象序列化为JSON    writeValueAsString（）方法**
 
+- **读取Redis时，手动把读取到的JSON反序列化为对象    readValue（获取到的字符串，转化的对象类）方法**
 
 
 

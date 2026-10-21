@@ -29,36 +29,37 @@ mysql -u root -p 连接mysql客户端
 密码123456
 ```
 
-1. DDL(Data Definition Languages、数据定义语言)，这些语句定义了不同的数据库、表、视图、索引等数据库对象，还可以用来创建、删除、修改数据库和数据表的结构。
+1. **DDL(Data Definition Languages、数据定义语言)，这些语句定义了不同的数据库、表、视图、索引等数据库对象，还可以用来创建、删除、修改数据库和数据表的结构。**
+   - **主要的语句关键字包括CREATE、DROP、ALTER、RENAME等。**
+   
+1. **DML(Data Manipulation Language、数据操作语言)，用于添加、删除、更新和查询数据库记录，并检查数据完整性。**
 
-   - 主要的语句关键字包括CREATE、DROP、ALTER、RENAME等。
+   - **主要的语句关键字包括INSERT、DELETE、UPDATE、SELECT等。**
+   - **SELECT是SQL语言的基础，最为重要。**
 
-1. DML(Data Manipulation Language、数据操作语言)，用于添加、删除、更新和查询数据库记录，并检查数据完整性。
+1. **DCL(Data Control Language、数据控制语言) ，用于定义数据库、表、字段、用户的访问权限和安全级别。**
 
-   - 主要的语句关键字包括INSERT、DELETE、UPDATE、SELECT等。
-   - SELECT是SQL语言的基础，最为重要。
+   - **主要的语句关键字包括 GRANT 、 REVOKE 、 COMMIT 、 ROLLBACK 、 SAVEPOINT 等。**
 
-1. DCL(Data Control Language、数据控制语言) ，用于定义数据库、表、字段、用户的访问权限和安全级别。
-
-   - 主要的语句关键字包括 GRANT 、 REVOKE 、 COMMIT 、 ROLLBACK 、 SAVEPOINT 等。
-
-## DDL语句
+## 数据库和表
 
 ```
 show databases;查询所有数据库
 select datase();查询当前数据库
-创建
+
+
+创建数据库
 create database [if not exists] 数据库名 [default charset 字符集][collate 排序规则];
-删除
-drop database [if exists] 数据库名;
-使用
+
+使用数据库
 use 数据库名;
-查询当前数据库所有标
+查询当前数据库所有表
 show tables;
 查询表结构
 desc 表名;
 查询指定表的建表语句
 show create table 表名;
+
 创建表
 create table tb_user(
 id int comment '编号'，
@@ -67,21 +68,30 @@ age int comment '年龄',
 gender varchar(1) comment '性别'
 ) comment '用户表';
 
+
+删除数据库
+drop database [if exists] 数据库名;
 ```
 
 ```
 添加字段
-alter table 表名 add 字段名 类型(长度) [comment 注释] [约束];
+alter table 表名 add 字段名 类型(长度) [comment 注释] [约束]  
+after/first 已有字段;字段的前后
+
 修改数据类型
 alter table 表名 modify 字段名 新的数据类型(长度);  
 修改字段名和字段类型
-alter table 表名 旧的字段名 新的字段名 数据类型(长度) [comment 注释] [约束];
+alter table 表名  change 旧的字段名 新的字段名 数据类型(长度) [comment 注释] [约束];
+
 删除字段
 alter table 表名 drop 字段名;
+
 修改表名
 alter table 表名 rename to 新表名;
+
 删除表
 drop table  [if exists] 表名;
+
 删除指定表并重新创建该表
 truncate table 表名;
 ```
@@ -108,7 +118,9 @@ entrydate date comment '入职时间'
 
 ```
 
-## DML语句
+**varchar为可变长度，char为定长**
+
+## CRUD
 
 ###  添加数据
 
@@ -119,18 +131,32 @@ insert into table(字段名1,字段名2)values(值1,值2);
 INSERT INTO 表名 VALUES (值1,值2,…);
 批量添加数据
 INSERT INTO 表名 (字段名1,字段名2,…) VALUES (值1,值2,…),(值1,值2,….,(值1,值2,…)
-INSERT INTO 表名 VALUES(值1,值2,…), (值1,值2,….,(值1,值2,….);
-
 //插入数据时，指定的字段顺序需要与值的顺序是一一对应的。
 //字符串和日期型数据应该包含在引号中。
 //插入的数据大小，应该在字段的规定范围内。
+```
 
+-  **ON DUPLICATE KEY 插入或更新 ,存在就更新，没有就插入**
+- **INSERT IGNORE 忽略重复**  
+- **必须要有：主键 / UNIQUE唯一索引**
+
+```
+INSERT INTO users (username, email, password, age)
+VALUES ('alice', 'alice@example.com', 'newpassword', 26)
+ON DUPLICATE KEY 
+    UPDATE
+    password = VALUES(password),
+    age = VALUES(age),
+    updated_at = CURRENT_TIMESTAMP;
+    
+ INSERT IGNORE INTO users (username, email, password, age)
+VALUES ('alice', 'alice@example.com', 'password123', 25);  
 ```
 
 ### 修改数据
 
 ```
-UPDATE 表名 SET字段名1=值1，字段名2=值2，……[WHERE 条件];
+UPDATE 表名 SET 字段名1=值1，字段名2=值2，……[WHERE 条件];
 //修改语句的条件可以有，也可以没有，如果没有条件，则会修改整张表的所有数据。
 ```
 
@@ -142,48 +168,46 @@ DELETE FROM 表名 [WHERE条件]
 //DELETE 语句不能删除某一个字段的值(可以使用UPDATE)。
 ```
 
-## DQL 语句
+## 查询
 
 ```
 查询多个字段
 SELECT 字段1,字段2,字段3 FROM 表名;
 SELECT * FROM 表名;
+
 设置别名
 SELECT 字段1[AS 别名1]，字段2[AS 别名2〕…FROM表名;
+
 去除重复记录
 SELECT DISTINCT 字段列表 FROM 表名;
+
 //通配符的优势是，当不知道所需要的列的名称时，可以通过它获取它们。
 在生产环境下，不推荐直接使用 SELECT ∗ 进行查询。
 ```
 
 ### 条件查询
 
-```
-SELECT 字段列表 FROM 表名 WHER E条件列表
-
-
-between and 在某个范围之内(含最大值和最小值)
-in() 在in 之后的列表中的值，多选一
-like 占位符 模糊匹配（——匹配单个字符，%匹配任意字符）
-is null 是null
-and 并且（多个条件同时成立）
-or 或者（多个条件任意一个成立)
-not 非不是
+- **between and 在某个范围之内(含最大值和最小值)**
+- **in() 在in 之后的列表中的值，多选一    Where id in(1,2,3,4,5);**
+- **模糊查询中like 占位符 模糊匹配（——匹配单个字符，%匹配任意字符）**
+- **and 并且（多个条件同时成立）or 或者（多个条件任意一个成立)**
 
 ```
+SELECT 字段列表 FROM 表名 WHER E条件列表 
+AND多条件查询
 
-```
-10.查询姓名为两个字的员工信息_%
+查询姓名为两个字的员工信息_%
 select * from emp where name like '__';
 11.查询身份证号最后一位是X的员工信息
 select * from emp where idcard like '%X';
 
-12.查询last_name中第2个字符是_且第3个字符是a的员工信息
+查询last_name中第2个字符是_且第3个字符是a的员工信息
 -- 需要使用转义字符：\
 SELECT last_name,salary,department_id
 FROM employees
 WHERE last_name LIKE '_\_a%';
-13.选择姓名中有字母a和k的员工姓名
+
+选择姓名中有字母a和k的员工姓名
 SELECT last_name
 FROM employees
 WHERE last_name LIKE ("%a%") AND last_name LIKE ("%k%");
@@ -212,40 +236,39 @@ select sum(age) from emp where workaddress='西安';
 
 ### 分组查询
 
-```
-SELECT 字段列表 FROM 表名 [WHERE条件] GROUP BY分组字段名[HAVING 分组后过滤祭件]
-where与having区别
-执行时机不同：where是分组之前进行过滤，不满足where条件，不参与分组；而having是分组之后对结果进行过滤。
-判断条件不同：where不能对聚合函数进行判断，而having可以。
-执行顺序:where >聚合函数>having
-分组之后，查询的字段一般为聚合函数和分组字段，查询其他字段无任何意义
-```
+**SELECT 字段列表 FROM 表名 [WHERE条件] GROUP BY分组字段名[HAVING 分组后过滤祭件]**
+**where与having区别**
+
+- **执行时机不同：where是分组之前进行过滤，不满足where条件，不参与分组；而having是分组之后对结果进行过滤。**
+- **判断条件不同：where不能对聚合函数进行判断，而having可以。**
+- **执行顺序:where >聚合函数>having**
+- **分组之后，查询的字段一般为聚合函数和分组字段，查询其他字段无任何意义**
 
 ```
-1.根据性别分组，统计男性员工和女性员工的数量
+根据性别分组，统计男性员工和女性员工的数量
 select gender, count(*) from emp group by gender ;
-2．根据性别分组，统计男性员工 和女性员工的平均年龄select gender, avg(age) from emp group by gender ;
-3．查询年龄小于45的员工，并根据工作地址分组，获取员工数量大于等于3的工作地址
-select workaddress, count(*) address_count from emp where age < 45 group by workaddress having address_count >= 3;
+
+查询年龄小于45的员工，并根据工作地址分组，获取员工数量大于等于3的工作地址
+select workaddress, count(*) address_count from emp 
+where age < 45 group by workaddress having address_count >= 3;
 ```
 
 ### 排序查询
 
-```
-SELECT 字段列表 FROM 表名 ORDER BY 字段1排序方式1，字段2排序方式2;
-ASC：升序（默认值）DESC：降序
-//如果是多字段排序，当第一个字段值相同时，才会根据第二个字段进行排序。
-//列的别名只能在ORDER BY 中使用，不能在WHERE中使用，因为WHERE的执行顺序先于别名，故在WHERE使用时会报错
-```
+**SELECT 字段列表 FROM 表名 ORDER BY 字段1排序方式1，字段2排序方式2;**
+**ASC：升序（默认值）DESC：降序**
+
+- **如果是多字段排序，当第一个字段值相同时，才会根据第二个字段进行排序。**
+- **列的别名只能在ORDER BY 中使用，不能在WHERE中使用，因为WHERE的执行顺序先于别名，故在WHERE使用时会报错**
+
+![image.webp](https://img.f3f3.top/picgo/1781409129012_image.webp)
 
 ### 分页查询
 
-```
-SELECT 字段列表 FROM 表名 LIMIT 起始索引,查询记录数;
-起始索引从0开始，起始索引=（查询页码-1）*每页显示记录数。
-分页查询是数据库的方言，不同的数据库有不同的实现，MySQL中是LIMIT。
-如果查询的是第一页数据，起始索引可以省略， 直接简写为imit 10。
-```
+- **SELECT 字段列表 FROM 表名 LIMIT 起始索引,查询记录数;**
+- **起始索引从0开始，起始索引=（查询页码-1）*每页显示记录数。**
+- **分页查询是数据库的方言，不同的数据库有不同的实现，MySQL中是LIMIT。**
+- **如果查询的是第一页数据，起始索引可以省略， 直接简写为imit 10。**
 
 ```
 询年龄为20，21，22，23岁的女性员工信息。
@@ -302,7 +325,47 @@ ORDER BY salary DESC
 LIMIT 1;
 ```
 
-![image.webp](https://img.f3f3.top/picgo/1781409129012_image.webp)
+
+
+### 多表查询
+
+#### 内连接
+
+**相当于查询A、B交集部分数据**
+
+```
+内连接演示
+1，查询每一个员工的姓名，及关联的部门的名称（隐式内连接实现）表结构：emp，dept
+连接条件：emp.dept_id=dept.id
+select emp.name , dept.name from emp , dept where emp.dept_id = dept.id
+select e.name,d.name from emp e , dept d where e.dept_id = d.id;
+2，查询每一个员工的姓名，及关联的部门的名称（显式内连接实现）表结构：emp，dept
+INNER JOIN...ON
+连接条件：emp.dept_id=dept.id
+select e.name, d.name from emp e inner join dept d on e.dept_id =d.id;
+select e.name, d.name from emp e join dept d on e.dept_id=d.id;
+```
+
+#### **外连接**
+
+- **左外连接：查询左表所有数据，以及两张表交集部分数据**
+
+- **右外连接：查询右表所有数据，以及两张表交集部分数据**
+
+- **自连接：当前表与自身的连接查询，自连接必须使用表别名**
+
+```
+1.查询emp表的所有数据，和对应的部门信息（左外连接)表结构：emp，dept
+连接条件：emp.dept_id=dept.id
+select e.*, d.name from emp e left outer join dept d on e.dept_id = d.id;
+select e.*, d.name from emp e left join dept d on e.dept_id = d.id;
+
+2.查询dept表的所有数据，和对应的员工信息(右外连接)
+select d.*, e.* from emp e right outer join dept d on e.dept_id = d.id;
+select d.*, e.* from dept d Left outer join emp e on e.dept_id = d.id;
+```
+
+
 
 ## 约束
 
@@ -314,10 +377,10 @@ LIMIT 1;
 
 ### 非空约束
 
-- 默认，所有的类型的值都可以是NULL，包括INT、FLOAT等数据类型
-- 非空约束只能出现在表对象的列上，`只能某个列单独限定非空，不能组合非空`
-- 一个表可以有很多列都分别限定了非空
-- 空字符串’’不等于NULL，0也不等于NULL
+- **默认，所有的类型的值都可以是NULL，包括INT、FLOAT等数据类型**
+- **非空约束只能出现在表对象的列上，`只能某个列单独限定非空，不能组合非空`**
+- **一个表可以有很多列都分别限定了非空**
+- **空字符串’’不等于NULL，0也不等于NULL**
 
 ```
 CREATE TABLE test1(
@@ -341,15 +404,15 @@ VALUES(73,'赵六',NULL,4399);
 
 ### 唯一性约束
 
-- 同一个表可以有多个唯一约束。
+- **同一个表可以有多个唯一约束。**
 
-- 唯一约束可以是某一个列的值唯一，也可以多个列组合的值唯一。
+- **唯一约束可以是某一个列的值唯一，也可以多个列组合的值唯一。**
 
-- 唯一性约束允许列值为空。
+- **唯一性约束允许列值为空。**
 
-- 在创建唯一约束的时候，如果不给唯一约束命名，就默认和列名相同。
+- **在创建唯一约束的时候，如果不给唯一约束命名，就默认和列名相同。**
 
-- MySQL会给唯一约束的列上默认创建一个唯一索引。
+- **MySQL会给唯一约束的列上默认创建一个唯一索引。**
 
 ```
 CREATE TABLE test2(
@@ -729,42 +792,6 @@ MySQL支持多种存储引擎，每一个表都可以指定一个不同的存储
 
 </details>
 
-## 多表查询
-
-连接查询
-内连接：相当于查询A、B交集部分数据
-外连接：
-左外连接：查询左表所有数据，以及两张表交集部分数据
-右外连接：查询右表所有数据，以及两张表交集部分数据
-自连接：当前表与自身的连接查询，自连接必须使用表别名
-
-### 内连接
-
-```
-内连接演示
-1，查询每一个员工的姓名，及关联的部门的名称（隐式内连接实现）表结构：emp，dept
-连接条件：emp.dept_id=dept.id
-select emp.name , dept.name from emp , dept where emp.dept_id = dept.id
-select e.name,d.name from emp e , dept d where e.dept_id = d.id;
-2，查询每一个员工的姓名，及关联的部门的名称（显式内连接实现）表结构：emp，dept
-INNER JOIN...ON
-连接条件：emp.dept_id=dept.id
-select e.name, d.name from emp e inner join dept d on e.dept_id =d.id;
-select e.name, d.name from emp e join dept d on e.dept_id=d.id;
-```
-
-### 外连接
-
-```
-1.查询emp表的所有数据，和对应的部门信息（左外连接)表结构：emp，dept
-连接条件：emp.dept_id=dept.id
-select e.*, d.name from emp e left outer join dept d on e.dept_id = d.id;
-select e.*, d.name from emp e left join dept d on e.dept_id = d.id;
-2.查询dept表的所有数据，和对应的员工信息(右外连接)
-select d.*, e.* from emp e right outer join dept d on e.dept_id = d.id;
-select d.*, e.* from dept d Left outer join emp e on e.dept_id = d.id;
-```
-
 ## 事务
 
 **事务**是一组操作的集合，它是一个不可分割的工作单位，事务会把所有的操作作为一个整体一起向系统提交或撤销操作请求，即这些操作**要么同时成功，要么同时失败** 默认MySQL的事务是自动提交的，也就是说，当执行一条DML语句，MySQL会自动隐式的提交事务。
@@ -779,8 +806,6 @@ SET @@autocommit = 0;
 
 开启事务
 START TRANSACTION 或 BEGIN;
-
-
 ```
 
 - 提交事务
@@ -790,13 +815,8 @@ START TRANSACTION 或 BEGIN;
   
   ```
 
-  
-
 - 回滚事务
 
   ```
   ROLLBACK;
-  
   ```
-
-  
